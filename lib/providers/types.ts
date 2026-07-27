@@ -56,6 +56,26 @@ export function isRetryableStatus(status: number): boolean {
 /* Language model                                                             */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The model spent its whole `max_tokens` budget before finishing the answer.
+ *
+ * Typed rather than a bare Error because the caller's response is specific: the
+ * budget covers thinking *plus* answer text, so the retry that has a chance of
+ * working is one with thinking turned off, not another identical attempt.
+ */
+export class TokenBudgetError extends Error {
+  constructor(
+    readonly operation: string,
+    readonly maxTokens: number,
+  ) {
+    super(
+      `${operation}: the model hit its ${maxTokens}-token budget before finishing. ` +
+        `Adaptive thinking is billed against max_tokens, so raise maxTokens or lower effort.`,
+    );
+    this.name = 'TokenBudgetError';
+  }
+}
+
 export interface LlmMessage {
   role: 'user' | 'assistant';
   content: string;

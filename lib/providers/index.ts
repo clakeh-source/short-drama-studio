@@ -1,4 +1,4 @@
-export { isRetryableStatus, ProviderRequestError } from './types';
+export { isRetryableStatus, ProviderRequestError, TokenBudgetError } from './types';
 
 export type {
   LlmGenerateInput,

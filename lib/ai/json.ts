@@ -2,6 +2,7 @@ import 'server-only';
 
 import { z } from 'zod';
 import type { LlmMessage, LlmProvider, LlmStreamChunk, LlmUsage } from '@/lib/providers';
+import { ProviderRequestError, TokenBudgetError } from '@/lib/providers';
 import { log } from '@/lib/log';
 
 /**
@@ -72,6 +73,12 @@ export interface StreamJsonOptions<T> {
   /** Total attempts including the first. Defaults to 2 (one retry). */
   maxAttempts?: number;
   /**
+   * Backoff before retrying a *provider* failure, multiplied by the attempt
+   * number. Schema retries do not wait — nothing is rate-limiting them. Set to
+   * 0 in tests.
+   */
+  retryDelayMs?: number;
+  /**
    * Semantic validation the schema cannot express — "this script is 45 seconds
    * long and it needed to be 60". Return null to accept, or a message telling
    * the model what to change; a rejection re-enters the same retry loop as a
@@ -96,34 +103,54 @@ export async function streamJson<T>(options: StreamJsonOptions<T>): Promise<Stre
   let lastError = '';
   let raw = '';
 
+  /**
+   * Forced off for the rest of the run once the budget has been exhausted once.
+   * `max_tokens` covers thinking as well as the answer, so an identical retry
+   * burns the budget the same way; with thinking off the whole allowance goes to
+   * the answer, which is the version that can actually finish.
+   */
+  let thinking = options.thinking;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     raw = '';
 
-    const generator = options.provider.stream({
-      operation: options.operation,
-      system: options.system,
-      messages,
-      maxTokens: options.maxTokens,
-      ...(options.effort ? { effort: options.effort } : {}),
-      ...(options.thinking ? { thinking: options.thinking } : {}),
-    });
-
-    let usage: LlmUsage;
-    while (true) {
-      const next = await generator.next();
-      if (next.done) {
-        usage = next.value;
-        break;
-      }
-      if (next.value.type === 'text') raw += next.value.text;
-      options.onDelta?.(next.value);
-    }
-
-    total.tokensIn += usage.tokensIn;
-    total.tokensOut += usage.tokensOut;
-    total.costCents += usage.costCents;
-
     try {
+      /**
+       * Consuming the stream belongs *inside* the retry, not before it.
+       *
+       * It used to sit outside this `try`, so anything the provider threw —
+       * an overloaded API, a dropped connection, a budget exhausted by adaptive
+       * thinking — escaped `streamJson` entirely and failed the whole
+       * generation on the first attempt, no matter what `maxAttempts` said. The
+       * retry budget only ever covered schema misses, which are the failure the
+       * model is *least* likely to produce. The user saw "Generation failed",
+       * nothing was saved, and because `recordUsage` runs after this returns,
+       * the tokens already paid for were never even logged.
+       */
+      const generator = options.provider.stream({
+        operation: options.operation,
+        system: options.system,
+        messages,
+        maxTokens: options.maxTokens,
+        ...(options.effort ? { effort: options.effort } : {}),
+        ...(thinking ? { thinking } : {}),
+      });
+
+      let usage: LlmUsage;
+      while (true) {
+        const next = await generator.next();
+        if (next.done) {
+          usage = next.value;
+          break;
+        }
+        if (next.value.type === 'text') raw += next.value.text;
+        options.onDelta?.(next.value);
+      }
+
+      total.tokensIn += usage.tokensIn;
+      total.tokensOut += usage.tokensOut;
+      total.costCents += usage.costCents;
+
       const parsed = options.schema.parse(JSON.parse(extractJson(raw)));
 
       const complaint = options.validate?.(parsed);
@@ -144,6 +171,17 @@ export async function streamJson<T>(options: StreamJsonOptions<T>): Promise<Stre
       return { data: parsed, usage: total, attempts: attempt, raw };
     } catch (error) {
       const semantic = error instanceof SemanticValidationError;
+      const budget = error instanceof TokenBudgetError;
+      // Anything thrown by the provider rather than by parsing or validation.
+      // There is no corrected JSON to ask for — the request never produced an
+      // answer — so these retry the same request unchanged.
+      const fromProvider = budget || error instanceof ProviderRequestError || !(
+        semantic ||
+        error instanceof z.ZodError ||
+        error instanceof SyntaxError ||
+        (error instanceof Error && /No JSON object found/.test(error.message))
+      );
+
       lastError =
         error instanceof z.ZodError
           ? JSON.stringify(z.treeifyError(error))
@@ -155,10 +193,26 @@ export async function streamJson<T>(options: StreamJsonOptions<T>): Promise<Stre
         operation: options.operation,
         attempt,
         provider: options.provider.id,
+        kind: budget ? 'token_budget' : fromProvider ? 'provider' : 'schema',
         error: lastError.slice(0, 500),
       });
 
+      // A refusal or a bad request is settled — the service will answer the
+      // same way next time, and every attempt is billed.
+      if (error instanceof ProviderRequestError && !error.retryable) throw error;
+
       if (attempt === maxAttempts) break;
+
+      if (budget) thinking = 'off';
+
+      if (fromProvider) {
+        // Nothing to correct, and the conversation must stay as it was: a
+        // truncated assistant turn would poison every later attempt.
+        if (options.retryDelayMs !== 0) {
+          await new Promise((r) => setTimeout(r, (options.retryDelayMs ?? 500) * attempt));
+        }
+        continue;
+      }
 
       // Feed the failure back. An assistant turn mid-conversation is fine —
       // only a trailing assistant prefill is rejected on 4.6+.
