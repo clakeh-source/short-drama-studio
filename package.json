@@ -35,6 +35,7 @@
     "drizzle-orm": "^0.44.5",
     "inngest": "^3.44.0",
     "lucide-react": "^0.544.0",
+    "mammoth": "^1.12.0",
     "next": "^15.5.4",
     "postgres": "^3.4.7",
     "react": "^19.1.1",

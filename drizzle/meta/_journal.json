@@ -36,6 +36,13 @@
       "when": 1785158246071,
       "tag": "0004_icy_energizer",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785163017260,
+      "tag": "0005_parallel_bishop",
+      "breakpoints": true
     }
   ]
 }

@@ -10,32 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-
-const GENRES = [
-  'Revenge',
-  'Secret identity',
-  'Billionaire romance',
-  'Family betrayal',
-  'Workplace thriller',
-  'Supernatural',
-  'Crime',
-  'Medical',
-] as const;
-
-const TONES = ['Cold and controlled', 'Melodramatic', 'Darkly funny', 'Tense', 'Tender'] as const;
-
-const AUDIENCES = ['Adults 18-34', 'Adults 25-44', 'Adults 35+', 'General adult'] as const;
-
-const LANGUAGES = [
-  { code: 'en', label: 'English' },
-  { code: 'es', label: 'Spanish' },
-  { code: 'pt', label: 'Portuguese' },
-  { code: 'fr', label: 'French' },
-  { code: 'de', label: 'German' },
-  { code: 'ja', label: 'Japanese' },
-  { code: 'ko', label: 'Korean' },
-  { code: 'zh', label: 'Chinese' },
-] as const;
+import { AUDIENCES, GENRES, LANGUAGES, TONES } from './show-options';
 
 const EXAMPLES = [
   'A hotel night manager recognises a guest she buried three months ago.',

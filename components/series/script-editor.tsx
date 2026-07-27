@@ -10,6 +10,7 @@ import {
   Save,
   Sparkles,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
@@ -32,6 +33,12 @@ export interface ScriptEditorProps {
   targetSeconds: number;
   castNames: string[];
   script: Script | null;
+  /**
+   * Downstream work already built from this script, or null if the episode has
+   * not been storyboarded. Present means every edit here is destructive to
+   * something, so the editor asks first.
+   */
+  storyboard?: { sceneCount: number; shotCount: number; generatedShotCount: number } | null;
 }
 
 type ScriptDone = {
@@ -56,9 +63,30 @@ export function ScriptEditor(props: ScriptEditorProps) {
   const [busyScene, setBusyScene] = useState<number | null>(null);
   const streamRef = useRef<HTMLPreElement>(null);
 
+  /**
+   * Held rather than run when the episode already has a storyboard.
+   *
+   * The storyboard is regenerated from the script, and shots carry generated
+   * video — so rewriting a scene here desyncs, and possibly discards, work the
+   * user has already paid for. They may well still want to; the rule is that
+   * they are told first, not stopped.
+   */
+  const [pendingEdit, setPendingEdit] = useState<{ what: string; run: () => void } | null>(null);
+
   useEffect(() => {
     streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight });
   }, [whole.text, scene.text]);
+
+  const guard = useCallback(
+    (what: string, run: () => void) => {
+      if (!props.storyboard || props.storyboard.shotCount === 0) {
+        run();
+        return;
+      }
+      setPendingEdit({ what, run });
+    },
+    [props.storyboard],
+  );
 
   const generate = useCallback(async () => {
     const result = await whole.run(`/api/episodes/${props.episodeId}/script`);
@@ -218,6 +246,50 @@ export function ScriptEditor(props: ScriptEditorProps) {
         </Card>
       ) : null}
 
+      {pendingEdit && props.storyboard ? (
+        <Card className="border-amber-500/60">
+          <CardContent className="space-y-3 p-4">
+            <div className="flex gap-3">
+              <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium">{pendingEdit.what} may invalidate the storyboard.</p>
+                <p className="text-muted-foreground">
+                  This episode already has {props.storyboard.sceneCount} storyboarded scene
+                  {props.storyboard.sceneCount === 1 ? '' : 's'} and {props.storyboard.shotCount}{' '}
+                  shot{props.storyboard.shotCount === 1 ? '' : 's'}
+                  {props.storyboard.generatedShotCount > 0
+                    ? `, ${props.storyboard.generatedShotCount} of which ${
+                        props.storyboard.generatedShotCount === 1 ? 'has' : 'have'
+                      } generated video`
+                    : ''}
+                  . Shots are rebuilt from the script, so any scene you change here will need
+                  storyboarding again
+                  {props.storyboard.generatedShotCount > 0
+                    ? ' — and its generated clips will no longer match.'
+                    : '.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const { run } = pendingEdit;
+                  setPendingEdit(null);
+                  run();
+                }}
+              >
+                Continue anyway
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setPendingEdit(null)}>
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
           <div>
@@ -231,11 +303,20 @@ export function ScriptEditor(props: ScriptEditorProps) {
             <Badge variant={drift <= 0.15 ? 'success' : 'warning'}>
               {estimated}s / {props.targetSeconds}s
             </Badge>
-            <Button variant="outline" size="sm" onClick={generate} disabled={streaming}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => guard('Rewriting the whole script', generate)}
+              disabled={streaming}
+            >
               <RefreshCw className={cn(whole.state === 'streaming' && 'animate-spin')} />
               Rewrite all
             </Button>
-            <Button size="sm" onClick={save} disabled={!dirty || saving}>
+            <Button
+              size="sm"
+              onClick={() => guard('Saving these changes', save)}
+              disabled={!dirty || saving}
+            >
               {saving ? <Loader2 className="animate-spin" /> : <Save />}
               Save
             </Button>
@@ -286,7 +367,9 @@ export function ScriptEditor(props: ScriptEditorProps) {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => regenerateScene(sceneIndex)}
+              onClick={() =>
+                guard(`Rewriting scene ${sceneIndex + 1}`, () => void regenerateScene(sceneIndex))
+              }
               disabled={streaming}
             >
               {busyScene === sceneIndex ? (
