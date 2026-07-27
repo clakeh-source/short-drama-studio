@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { ChevronLeft } from 'lucide-react';
-import { CreateSeriesWizard } from '@/components/series/create-wizard';
+import { NewSeriesStart } from '@/components/series/new-series-start';
 import { requireUser } from '@/lib/auth';
 
 export const metadata = { title: 'New series · Short Drama Studio' };
@@ -21,11 +21,12 @@ export default async function NewSeriesPage() {
         </Link>
         <h1 className="mt-2 text-2xl font-semibold">New series</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          A premise becomes a bible, a cast and an episode list. You review every stage.
+          Start from a premise and let the model write it, or bring a script you already have.
+          Either way you review every stage.
         </p>
       </div>
 
-      <CreateSeriesWizard />
+      <NewSeriesStart />
     </div>
   );
 }

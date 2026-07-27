@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { withUserDb, type Transaction } from '@/lib/db';
 import { characters, episodes, scenes, series, shots } from '@/lib/db/schema';
 import type { Character, Scene as SceneRow, Shot } from '@/lib/db/schema';
@@ -102,6 +102,39 @@ export async function loadStoryboardPage(
         scene,
         shots: allShots.filter((shot) => shot.sceneId === scene.id),
       })),
+    };
+  });
+}
+
+/**
+ * How much downstream work already hangs off this episode's script.
+ *
+ * The script editor needs this to warn before an edit desyncs a storyboard that
+ * has already been built — and possibly already generated video — so it is a
+ * count, not the board itself: the editor never renders shots.
+ */
+export async function loadStoryboardSummary(
+  userId: string,
+  episodeId: string,
+): Promise<{ sceneCount: number; shotCount: number; generatedShotCount: number }> {
+  return withUserDb(userId, async (tx) => {
+    const rows = await tx
+      .select({ status: shots.status })
+      .from(shots)
+      .innerJoin(scenes, eq(scenes.id, shots.sceneId))
+      .where(eq(scenes.episodeId, episodeId));
+
+    const [{ count } = { count: 0 }] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(scenes)
+      .where(eq(scenes.episodeId, episodeId));
+
+    return {
+      sceneCount: count,
+      shotCount: rows.length,
+      // Clips that cost money. Losing these is materially worse than losing an
+      // un-generated shot, and the warning says so.
+      generatedShotCount: rows.filter((r) => r.status === 'ready').length,
     };
   });
 }

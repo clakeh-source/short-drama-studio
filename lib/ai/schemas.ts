@@ -45,7 +45,13 @@ export const bibleSchema = z.object({
   logline: z.string().min(1).max(500),
   world: z.string().min(1).max(3000),
   tone_rules: z.array(z.string().min(1).max(400)).min(2).max(10),
-  characters: z.array(bibleCharacterSchema).min(3).max(6),
+  /**
+   * The generate path's prompt asks for 3-6; this rail is wider because an
+   * imported script's cast is however many people speak in it, and forking the
+   * bible shape per source would put a branch in everything downstream that
+   * reads a character. One or two speakers is a real two-hander, not an error.
+   */
+  characters: z.array(bibleCharacterSchema).min(1).max(12),
   season_arc: z.string().min(1).max(3000),
   episodes: z.array(bibleEpisodeSchema).min(1).max(50),
   /**
@@ -69,11 +75,34 @@ export const beatSchema = z.object({
   speaker: z.string().max(80).nullable().optional(),
 });
 
+/**
+ * What the importer could not work out for itself.
+ *
+ * Carried on the scene rather than alongside it so a warning cannot drift from
+ * the scene it describes, and optional so an AI-written script — which has no
+ * parse step — validates against exactly the same schema. The pipeline reads
+ * `scenes[]` and ignores this; it exists for the confirm screen to flag.
+ */
+export const parseWarningSchema = z.object({
+  code: z.enum([
+    'inferred_scene_break',
+    'missing_slugline',
+    'unattributed_dialogue',
+    'no_speakers_found',
+    'unparsed_tail',
+    'auto_split_episodes',
+    'too_many_scenes',
+  ]),
+  message: z.string().min(1).max(300),
+});
+
 export const sceneSchema = z.object({
   location: z.string().min(1).max(160),
   time_of_day: z.string().min(1).max(60),
   summary: z.string().min(1).max(600),
   beats: z.array(beatSchema).min(1).max(40),
+  /** Present only on imported scenes the parser was unsure about. */
+  parse_warnings: z.array(parseWarningSchema).max(10).optional(),
 });
 
 export const scriptSchema = z.object({
@@ -87,6 +116,19 @@ export const scriptSchema = z.object({
 export type Script = z.infer<typeof scriptSchema>;
 export type Scene = z.infer<typeof sceneSchema>;
 export type Beat = z.infer<typeof beatSchema>;
+export type ParseWarning = z.infer<typeof parseWarningSchema>;
+
+/**
+ * Where an episode's script came from.
+ *
+ * Stored on the series because it is a property of how the show is being made,
+ * not of any one episode — and because the choice is made at creation, before
+ * an episode row exists. The script *shape* is identical either way, which is
+ * the point: nothing downstream branches on this.
+ */
+export const SCRIPT_SOURCES = ['generated', 'user_provided'] as const;
+export const scriptSourceSchema = z.enum(SCRIPT_SOURCES);
+export type ScriptSource = z.infer<typeof scriptSourceSchema>;
 
 /* -------------------------------------------------------------------------- */
 /* Storyboard                                                                 */
@@ -142,3 +184,34 @@ export const createSeriesInputSchema = z.object({
 });
 
 export type CreateSeriesInput = z.infer<typeof createSeriesInputSchema>;
+
+/**
+ * Committing a script the user brought.
+ *
+ * There is no premise: the script *is* the premise, and the bible is derived
+ * from it. Everything else matches `createSeriesInputSchema`, because a series
+ * is a series once it exists — the two flows differ only in how they start.
+ *
+ * `episodes[].script` is the shape the user confirmed on the preview screen,
+ * which may differ from what the parser produced; the preview is an editor, not
+ * a receipt.
+ */
+export const importScriptInputSchema = z.object({
+  genre: z.string().min(1).max(60),
+  tone: z.string().min(1).max(60),
+  audience: z.string().min(1).max(60),
+  language: z.string().min(2).max(20).default('en'),
+  episodeSeconds: z.coerce.number().int().min(15).max(300),
+  episodes: z
+    .array(
+      z.object({
+        number: z.int().min(1),
+        title: z.string().max(120).default(''),
+        script: scriptSchema,
+      }),
+    )
+    .min(1)
+    .max(50),
+});
+
+export type ImportScriptInput = z.infer<typeof importScriptInputSchema>;

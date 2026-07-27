@@ -34,6 +34,13 @@ const id = () => uuid('id').primaryKey().default(sql`gen_random_uuid()`);
 
 export const seriesStatus = pgEnum('series_status', ['draft', 'active', 'archived']);
 
+/**
+ * Whether the scripts in this series are written by the model or supplied by the
+ * user. Only the *route in* differs — both produce the same script shape, so
+ * nothing downstream of the script branches on it.
+ */
+export const scriptSource = pgEnum('script_source', ['generated', 'user_provided']);
+
 export const episodeStatus = pgEnum('episode_status', [
   'draft',
   'scripted',
@@ -139,6 +146,9 @@ export const series = pgTable(
     captionStyleId: text('caption_style_id').notNull().default('short-drama'),
     /** Optional music bed, as `bucket/path` in Storage. */
     musicStoragePath: text('music_storage_path'),
+    /** Defaults to `generated` so every series that predates the import flow
+     *  keeps describing itself correctly. */
+    scriptSource: scriptSource('script_source').notNull().default('generated'),
     status: seriesStatus('status').notNull().default('draft'),
     ...timestamps,
   },

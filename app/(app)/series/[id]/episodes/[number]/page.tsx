@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { ScriptEditor } from '@/components/series/script-editor';
 import { requireUser } from '@/lib/auth';
 import { loadEpisodeByNumber, parseScript } from '@/lib/data/series';
+import { loadStoryboardSummary } from '@/lib/data/storyboard';
 import { notFound } from '@/lib/api/handler';
 
 export const dynamic = 'force-dynamic';
@@ -22,6 +23,10 @@ export default async function EpisodePage({
 
   const { episode, series, characters } = await loadEpisodeByNumber(user.id, id, parsedNumber);
   const script = parseScript(episode.script);
+
+  // What editing the script would put out of date. Read here rather than in the
+  // editor so the warning is accurate on first paint, not after a round trip.
+  const storyboard = await loadStoryboardSummary(user.id, episode.id);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -61,6 +66,7 @@ export default async function EpisodePage({
         targetSeconds={series.episodeTargetSeconds}
         castNames={characters.map((c) => c.name)}
         script={script}
+        storyboard={storyboard}
       />
     </div>
   );
