@@ -1,4 +1,4 @@
-import { isRetryableStatus, ProviderRequestError } from '../types';
+import { configurationError, isRetryableStatus, ProviderRequestError } from '../types';
 import type { TtsProvider, TtsResult, TtsWordTiming } from '../types';
 
 /**
@@ -35,7 +35,7 @@ const DEFAULT_OUTPUT_FORMAT = 'wav_24000';
 function apiKey(): string {
   const key = process.env.ELEVENLABS_API_KEY;
   if (!key) {
-    throw new Error(
+    throw configurationError(
       'ELEVENLABS_API_KEY is not set. Set it, or use TTS_PROVIDER=stub for local development.',
     );
   }
@@ -48,7 +48,7 @@ function centsPer1kChars(): number {
 
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error(`ELEVENLABS_CENTS_PER_1K_CHARS="${raw}" is not a non-negative number.`);
+    throw configurationError(`ELEVENLABS_CENTS_PER_1K_CHARS="${raw}" is not a non-negative number.`);
   }
   return parsed;
 }

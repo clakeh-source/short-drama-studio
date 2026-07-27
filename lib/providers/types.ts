@@ -52,6 +52,24 @@ export function isRetryableStatus(status: number): boolean {
   return status >= 500 || status === 429 || status === 408;
 }
 
+/**
+ * A setting is missing or malformed.
+ *
+ * Adapters used to throw a bare `Error` for these, which made a typo in
+ * `.env` indistinguishable from a network blip: the job in
+ * /lib/inngest/functions/generate-shot-video.ts only short-circuits on a
+ * non-retryable `ProviderRequestError`, so an unset `REPLICATE_VIDEO_MODEL`
+ * spent four attempts per shot — 48 across a twelve-shot episode — to arrive at
+ * the same certain failure, and left the assets mid-flight instead of failed
+ * with the reason on them.
+ *
+ * No amount of retrying will set an environment variable, so these are always
+ * `retryable: false`.
+ */
+export function configurationError(message: string): ProviderRequestError {
+  return new ProviderRequestError(message, { retryable: false });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Language model                                                             */
 /* -------------------------------------------------------------------------- */

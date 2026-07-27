@@ -281,3 +281,43 @@ describe('output extraction', () => {
     expect(extractOutputUrl('not a url')).toBeNull();
   });
 });
+
+/**
+ * Misconfiguration is certain, not transient.
+ *
+ * The job in generate-shot-video only short-circuits on a non-retryable
+ * `ProviderRequestError`; anything else falls through to Inngest's retry policy.
+ * These used to be bare `Error`s, so an unset model slug spent four attempts per
+ * shot — 48 across a twelve-shot episode — reaching the same certain failure,
+ * and left the assets mid-flight rather than failed with the reason on them.
+ */
+describe('configuration errors are refusals, not faults', () => {
+  const cases: Array<[string, () => void]> = [
+    ['REPLICATE_API_TOKEN missing', () => delete process.env.REPLICATE_API_TOKEN],
+    ['REPLICATE_VIDEO_MODEL missing', () => delete process.env.REPLICATE_VIDEO_MODEL],
+    [
+      'REPLICATE_VIDEO_EXTRA_INPUT not JSON',
+      () => {
+        process.env.REPLICATE_VIDEO_EXTRA_INPUT = '{nope';
+      },
+    ],
+  ];
+
+  for (const [name, break_] of cases) {
+    it(`${name} fails non-retryably`, async () => {
+      break_();
+      const provider = new ReplicateVideoProvider();
+
+      await expect(
+        provider.generate({ prompt: 'x', durationSeconds: 5, aspectRatio: '9:16' }),
+      ).rejects.toMatchObject({ name: 'ProviderRequestError', retryable: false });
+    });
+  }
+
+  it('reports a bad duration grid non-retryably too', () => {
+    process.env.REPLICATE_VIDEO_DURATIONS = 'five,ten';
+    expect(() => supportedDurations()).toThrow(
+      expect.objectContaining({ name: 'ProviderRequestError', retryable: false }),
+    );
+  });
+});

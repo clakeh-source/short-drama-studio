@@ -1,4 +1,4 @@
-import { isRetryableStatus, ProviderRequestError } from '../types';
+import { configurationError, isRetryableStatus, ProviderRequestError } from '../types';
 import type { ProviderResult, VideoGenInput, VideoProvider } from '../types';
 
 /**
@@ -36,7 +36,7 @@ const DEFAULT_CENTS_PER_SECOND = 5;
 function token(): string {
   const value = process.env.REPLICATE_API_TOKEN;
   if (!value) {
-    throw new Error(
+    throw configurationError(
       'REPLICATE_API_TOKEN is not set. Set it, or use VIDEO_PROVIDER=stub for local development.',
     );
   }
@@ -46,7 +46,7 @@ function token(): string {
 function modelSlug(): string {
   const value = process.env.REPLICATE_VIDEO_MODEL?.trim();
   if (!value) {
-    throw new Error(
+    throw configurationError(
       'REPLICATE_VIDEO_MODEL is not set. Give it a model slug, e.g. owner/name or owner/name:version.',
     );
   }
@@ -64,7 +64,7 @@ export function supportedDurations(): number[] {
     .filter((n) => Number.isFinite(n) && n > 0);
 
   if (parsed.length === 0) {
-    throw new Error(
+    throw configurationError(
       `REPLICATE_VIDEO_DURATIONS="${raw}" contains no positive numbers. Give it a comma-separated list, e.g. "5,10".`,
     );
   }
@@ -77,7 +77,7 @@ function centsPerSecond(): number {
 
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error(
+    throw configurationError(
       `REPLICATE_VIDEO_COST_CENTS_PER_SECOND="${raw}" is not a non-negative number.`,
     );
   }
@@ -97,11 +97,11 @@ function extraInput(): Record<string, unknown> {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error('REPLICATE_VIDEO_EXTRA_INPUT is not valid JSON.');
+    throw configurationError('REPLICATE_VIDEO_EXTRA_INPUT is not valid JSON.');
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('REPLICATE_VIDEO_EXTRA_INPUT must be a JSON object.');
+    throw configurationError('REPLICATE_VIDEO_EXTRA_INPUT must be a JSON object.');
   }
   return parsed as Record<string, unknown>;
 }
