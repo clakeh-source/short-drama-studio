@@ -1,4 +1,5 @@
 import type { ProviderResult, RenderInput, RenderProvider } from '../types';
+import { configurationError, isRetryableStatus, ProviderRequestError } from '../types';
 import { CAPTION_PRESETS, DEFAULT_CAPTION_STYLE_ID, FRAME_HEIGHT } from '../../captions';
 
 /**
@@ -34,7 +35,7 @@ function apiBase(): string {
 function apiKey(): string {
   const key = process.env.SHOTSTACK_API_KEY;
   if (!key) {
-    throw new Error(
+    throw configurationError(
       'SHOTSTACK_API_KEY is not set. Set it, or use RENDER_PROVIDER=ffmpeg for local rendering.',
     );
   }
@@ -135,7 +136,9 @@ export class ShotstackRenderProvider implements RenderProvider {
 
   async render(input: RenderInput): Promise<{ providerJobId: string }> {
     if (input.clips.length === 0) {
-      throw new Error('Nothing to render — the timeline has no clips.');
+      // A timeline with no clips is a caller bug, not a transient fault; the
+      // same call will produce the same empty timeline every time.
+      throw configurationError('Nothing to render — the timeline has no clips.');
     }
 
     const response = await fetch(`${apiBase()}/render`, {
@@ -149,8 +152,11 @@ export class ShotstackRenderProvider implements RenderProvider {
       | null;
 
     if (!response.ok || !payload?.response?.id) {
-      throw new Error(
+      // Classified by status like every other adapter: a 402 or a 401 will be
+      // refused identically next time, while a 5xx is worth another go.
+      throw new ProviderRequestError(
         `Shotstack refused the render (${response.status}): ${payload?.message ?? 'no detail'}`,
+        { retryable: isRetryableStatus(response.status), status: response.status },
       );
     }
 
