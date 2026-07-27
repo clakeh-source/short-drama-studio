@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { LlmGenerateInput, LlmProvider, LlmStreamChunk, LlmUsage } from '../types';
+import { ProviderRequestError, TokenBudgetError } from '../types';
 
 /**
  * The one file in the codebase allowed to import @anthropic-ai/sdk.
@@ -89,18 +90,18 @@ export class AnthropicLlmProvider implements LlmProvider {
     // spends the budget the answer is cut off mid-sentence, and the caller sees
     // an unparseable fragment. Say what actually happened instead.
     if (message.stop_reason === 'max_tokens') {
-      throw new Error(
-        `${input.operation}: the model hit its ${input.maxTokens}-token budget before finishing. ` +
-          `Adaptive thinking is billed against max_tokens, so raise maxTokens or lower effort.`,
-      );
+      throw new TokenBudgetError(input.operation, input.maxTokens);
     }
 
+    // Not retryable: the model will decline the same request again, and each
+    // attempt is billed.
     if (message.stop_reason === 'refusal') {
-      throw new Error(
+      throw new ProviderRequestError(
         `${input.operation}: the model declined this request` +
           (message.stop_details?.type === 'refusal' && message.stop_details.category
             ? ` (${message.stop_details.category}).`
             : '.'),
+        { retryable: false },
       );
     }
 

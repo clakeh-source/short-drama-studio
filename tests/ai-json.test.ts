@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { extractJson, JsonGenerationError, streamJson } from '@/lib/ai/json';
 import type { LlmGenerateInput, LlmProvider, LlmStreamChunk, LlmUsage } from '@/lib/providers';
+import { ProviderRequestError, TokenBudgetError } from '@/lib/providers';
 
 /** A provider that replays a scripted list of responses, one per attempt. */
 function scriptedProvider(responses: string[]): LlmProvider & { calls: LlmGenerateInput[] } {
@@ -120,5 +121,95 @@ describe('streamJson', () => {
     const provider = scriptedProvider(['{"bad":true}']);
     await expect(streamJson({ ...base, provider, maxAttempts: 3 })).rejects.toThrow();
     expect(provider.calls).toHaveLength(3);
+  });
+});
+
+/**
+ * The attempt budget used to cover only schema misses: the stream was consumed
+ * *before* the `try`, so anything the provider threw — an overloaded API, a
+ * dropped connection, a `max_tokens` budget eaten by adaptive thinking — failed
+ * the whole generation on attempt one and saved nothing. That is the failure a
+ * long script generation actually hits; a schema miss is the rare one.
+ */
+describe('streamJson provider failures', () => {
+  const base = {
+    operation: 'test.op',
+    system: 'system',
+    prompt: 'prompt',
+    schema,
+    maxTokens: 100,
+    retryDelayMs: 0,
+  };
+
+  /** Throws mid-stream on the first `failures` attempts, then succeeds. */
+  function flakyProvider(
+    failures: number,
+    error: () => Error,
+  ): LlmProvider & { calls: LlmGenerateInput[] } {
+    const calls: LlmGenerateInput[] = [];
+    return {
+      id: 'flaky',
+      model: 'flaky-v1',
+      calls,
+      estimateCostCents: () => 1,
+      async *stream(input: LlmGenerateInput): AsyncGenerator<LlmStreamChunk, LlmUsage, void> {
+        calls.push(input);
+        yield { type: 'text', text: '{"name":"a"' };
+        if (calls.length <= failures) throw error();
+        yield { type: 'text', text: ',"count":1}' };
+        return { tokensIn: 100, tokensOut: 50, costCents: 2 };
+      },
+    };
+  }
+
+  it('retries a transient provider error instead of failing outright', async () => {
+    const provider = flakyProvider(1, () => new Error('Overloaded'));
+
+    const result = await streamJson({ ...base, provider, maxAttempts: 3 });
+
+    expect(result.data).toEqual({ name: 'a', count: 1 });
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it('retries the request unchanged — a truncated turn must not poison it', async () => {
+    const provider = flakyProvider(1, () => new Error('Overloaded'));
+
+    await streamJson({ ...base, provider, maxAttempts: 3 });
+
+    // One user turn on both attempts: no assistant fragment, no correction.
+    expect(provider.calls[1]!.messages).toEqual([{ role: 'user', content: 'prompt' }]);
+  });
+
+  it('turns thinking off after the token budget is exhausted', async () => {
+    const provider = flakyProvider(1, () => new TokenBudgetError('test.op', 100));
+
+    const result = await streamJson({ ...base, provider, maxAttempts: 3 });
+
+    expect(result.data).toEqual({ name: 'a', count: 1 });
+    // The budget covers thinking plus answer, so the retry that can finish is
+    // the one that spends none of it on thinking.
+    expect(provider.calls[0]!.thinking).toBeUndefined();
+    expect(provider.calls[1]!.thinking).toBe('off');
+  });
+
+  it('does not retry a refusal — it would be refused again, and billed again', async () => {
+    const provider = flakyProvider(
+      99,
+      () => new ProviderRequestError('the model declined this request', { retryable: false }),
+    );
+
+    await expect(streamJson({ ...base, provider, maxAttempts: 3 })).rejects.toThrow(
+      ProviderRequestError,
+    );
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it('still gives up, and reports why, when every attempt fails', async () => {
+    const provider = flakyProvider(99, () => new Error('Overloaded'));
+
+    await expect(streamJson({ ...base, provider, maxAttempts: 2 })).rejects.toThrow(
+      JsonGenerationError,
+    );
+    expect(provider.calls).toHaveLength(2);
   });
 });
