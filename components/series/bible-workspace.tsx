@@ -22,6 +22,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useGeneration } from '@/components/generation/use-generation';
 import { APPEARANCE_PROMPT_MAX, type Bible } from '@/lib/ai/schemas';
 import { VoicePicker } from '@/components/series/voice-picker';
+import { ReferenceImages, type ReferenceImage } from '@/components/series/reference-images';
 import { cn } from '@/lib/utils';
 
 export interface WorkspaceCharacter {
@@ -32,6 +33,8 @@ export interface WorkspaceCharacter {
   appearancePrompt: string;
   /** Null until a voice is chosen; assigned a sensible default at bible time. */
   voiceId: string | null;
+  /** Reference stills, in canonical order. Empty until the user uploads some. */
+  referenceImages: ReferenceImage[];
 }
 
 export interface WorkspaceEpisode {
@@ -163,8 +166,38 @@ export function BibleWorkspace(props: BibleWorkspaceProps) {
 
   /* ---------------------------------------------------------------------- */
 
+  const castCard =
+    cast.length > 0 ? (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Users className="size-4" />
+            Cast
+          </CardTitle>
+          <CardDescription>
+            The appearance prompt is copied verbatim into every shot this character appears in.
+            It is the only thing keeping them looking like the same person across shots.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {cast.map((character) => (
+            <CharacterEditor
+              key={character.id}
+              character={character}
+              onChange={(next) => setCast((prev) => prev.map((c) => (c.id === next.id ? next : c)))}
+              onSave={saveCharacter}
+            />
+          ))}
+        </CardContent>
+      </Card>
+    ) : null;
+
   if (!bible) {
+    // A series can have a cast and no bible — an imported script produces
+    // exactly that, and so does the seed. Showing the empty state on its own
+    // would leave those characters, and their reference stills, unreachable.
     return (
+      <div className="space-y-6">
       <Card>
         <CardContent className="flex flex-col items-center gap-4 p-12 text-center">
           {streaming ? (
@@ -200,6 +233,8 @@ export function BibleWorkspace(props: BibleWorkspaceProps) {
           )}
         </CardContent>
       </Card>
+      {castCard}
+      </div>
     );
   }
 
@@ -297,30 +332,7 @@ export function BibleWorkspace(props: BibleWorkspaceProps) {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Users className="size-4" />
-            Cast
-          </CardTitle>
-          <CardDescription>
-            The appearance prompt is copied verbatim into every shot this character appears in.
-            It is the only thing keeping them looking like the same person across shots.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {cast.map((character) => (
-            <CharacterEditor
-              key={character.id}
-              character={character}
-              onChange={(next) =>
-                setCast((prev) => prev.map((c) => (c.id === next.id ? next : c)))
-              }
-              onSave={saveCharacter}
-            />
-          ))}
-        </CardContent>
-      </Card>
+      {castCard}
 
       <Card>
         <CardHeader>
@@ -453,6 +465,12 @@ function CharacterEditor({
           disabled={saving}
         />
       </div>
+
+      <ReferenceImages
+        characterId={character.id}
+        characterName={character.name}
+        initial={character.referenceImages}
+      />
     </div>
   );
 }

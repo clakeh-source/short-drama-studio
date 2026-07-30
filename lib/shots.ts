@@ -15,6 +15,60 @@ export const MIN_SHOT_SECONDS = 3;
 export const MAX_SHOT_SECONDS = 8;
 
 /**
+ * The longest single clip any hosted video model here will render.
+ *
+ * Distinct from `MAX_SHOT_SECONDS`, which is an editorial ceiling for coverage
+ * the model plans from scratch — an 8-second shot is already long for vertical
+ * drama. This is a hard technical limit: Kling's per-clip ceiling. A shot longer
+ * than this cannot be generated at all, whatever the storyboard says, so a
+ * script breakdown that implies one has to become several shots.
+ */
+export const MAX_CLIP_SECONDS = 15;
+
+/**
+ * Splits any shot longer than the clip ceiling into as many as it needs.
+ *
+ * The breakdown prompt asks the model to do this itself, and it mostly does.
+ * That is not enough to rely on: a shot over the ceiling is not a quality
+ * problem to be nudged, it is a shot that will fail to generate. So the rule is
+ * applied deterministically here as well, and the model's compliance stops being
+ * load-bearing.
+ *
+ * Time is divided evenly and rounded, with the remainder on the first part, so
+ * the pieces always sum back to the original duration — a 22-second shot becomes
+ * 11 + 11, not 15 + 7. Even parts read as deliberate coverage; a stub tail reads
+ * as a mistake.
+ */
+export function splitLongShots<T>(
+  shots: readonly T[],
+  durationOf: (shot: T) => number,
+  withDuration: (shot: T, seconds: number, part: number, parts: number) => T,
+): T[] {
+  const out: T[] = [];
+
+  for (const shot of shots) {
+    const seconds = durationOf(shot);
+
+    if (seconds <= MAX_CLIP_SECONDS) {
+      out.push(shot);
+      continue;
+    }
+
+    const parts = Math.ceil(seconds / MAX_CLIP_SECONDS);
+    const base = Math.floor(seconds / parts);
+    let remainder = seconds - base * parts;
+
+    for (let part = 0; part < parts; part++) {
+      const extra = remainder > 0 ? 1 : 0;
+      remainder -= extra;
+      out.push(withDuration(shot, base + extra, part, parts));
+    }
+  }
+
+  return out;
+}
+
+/**
  * The durations a provider will actually render, derived by asking it to clamp
  * every value in range and keeping the distinct answers.
  */

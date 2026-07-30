@@ -1,7 +1,9 @@
 import { NonRetriableError } from 'inngest';
 import { screenWithRules } from '@/lib/ai/safety';
+import { loadShotReferenceSet } from '@/lib/characters/reference-set';
 import {
   claimVideoSlot,
+  MAX_INFLIGHT_VIDEO_JOBS,
   loadShotForJob,
   reconcileShotStatus,
   recordedProviderJobId,
@@ -68,9 +70,21 @@ export const generateShotVideo = inngest.createFunction(
   {
     id: 'shot-generate-video',
     name: 'Generate shot video',
-    // Phase 3 AC #4. Keyed on the user, so one person's 20-shot episode cannot
-    // starve anyone else, and their own jobs queue behind three in flight.
-    concurrency: { limit: 3, key: 'event.data.userId' },
+    /**
+     * In-flight video jobs per *project*, from the one place that defines it.
+     *
+     * Declared at the queue rather than enforced by an app-level semaphore, per
+     * the spec. It is necessary but not sufficient on its own — every
+     * `step.sleep` in the poll loop below hands the slot back, so this bounds
+     * concurrent *execution*, not concurrent provider jobs. `claimVideoSlot`
+     * is the lease that makes the cap hold across sleeps; see its comment.
+     *
+     * Both read `MAX_INFLIGHT_VIDEO_JOBS`, so raising `VIDEO_CONCURRENCY` moves
+     * them together. Two different numbers here would mean the queue admitted
+     * work the lease then refused, and shots would sit in admission-wait for no
+     * reason.
+     */
+    concurrency: { limit: MAX_INFLIGHT_VIDEO_JOBS, key: 'event.data.seriesId' },
     /**
      * Inngest retries *step execution*; our loop below owns *provider outcomes*.
      * These are separate concerns and conflating them broke durability.
@@ -92,9 +106,9 @@ export const generateShotVideo = inngest.createFunction(
   },
   { event: 'shot/video.requested' },
   async ({ event, step }) => {
-    const { userId, episodeId, shotId, attempt } = event.data;
+    const { userId, seriesId, episodeId, shotId, attempt, version } = event.data;
     const provider = getVideoProvider();
-    const context = { userId, episodeId, shotId, provider: provider.id, attempt };
+    const context = { userId, seriesId, episodeId, shotId, provider: provider.id, attempt, version };
 
     /* -- 1. What are we generating? ---------------------------------------- */
 
@@ -119,11 +133,23 @@ export const generateShotVideo = inngest.createFunction(
         throw new NonRetriableError(findings[0]!.message);
       }
 
+      /**
+       * The canonical stills of everyone in this shot.
+       *
+       * Loaded here, in the same durable step as the rest of the plan, so a
+       * resumed run re-uses the URLs it already signed rather than minting new
+       * ones — and so what the job conditioned on is recorded even if the
+       * character's reference set changes underneath it later.
+       */
+      const references = await loadShotReferenceSet(shot.characterIds);
+
       return {
         prompt,
         negativePrompt: shot.negativePrompt,
         durationSeconds: shot.durationSeconds,
         seriesId: series.id,
+        referenceImageUrls: references.urls,
+        referenceCharacters: references.characters,
         estimateCents: provider.estimateCostCents({
           prompt,
           durationSeconds: shot.durationSeconds,
@@ -163,6 +189,7 @@ export const generateShotVideo = inngest.createFunction(
         kind: 'video',
         provider: provider.id,
         attempt,
+        version,
       });
       await setShotStatus(shotId, 'queued', { retryCount: attempt });
       return { id: row.id };
@@ -182,7 +209,8 @@ export const generateShotVideo = inngest.createFunction(
      */
     const admitted = await (async () => {
       for (let wait = 0; wait <= MAX_ADMISSION_WAITS; wait++) {
-        if (await step.run(`admit-${wait}`, () => claimVideoSlot(userId, asset.id))) return true;
+        if (await step.run(`admit-${wait}`, () => claimVideoSlot(plan.seriesId, asset.id)))
+          return true;
         await step.sleep(`admission-wait-${wait}`, admissionWait(wait));
       }
       return false;
@@ -216,6 +244,16 @@ export const generateShotVideo = inngest.createFunction(
         return { providerJobId: existing };
       }
 
+      /**
+       * Reference stills present means image-to-video; none means
+       * text-to-video. The adapter makes that choice, but the decision is
+       * recorded here — on the asset and in the log — because "did this shot
+       * actually condition on the character's face" is otherwise unanswerable
+       * after the fact, and a silent fallback to text-to-video looks exactly
+       * like a working pipeline until you notice the face changed.
+       */
+      const mode = plan.referenceImageUrls.length > 0 ? 'image-to-video' : 'text-to-video';
+
       let providerJobId: string;
       try {
         ({ providerJobId } = await provider.generate({
@@ -223,6 +261,9 @@ export const generateShotVideo = inngest.createFunction(
           ...(plan.negativePrompt ? { negativePrompt: plan.negativePrompt } : {}),
           durationSeconds: plan.durationSeconds,
           aspectRatio: '9:16',
+          ...(plan.referenceImageUrls.length > 0
+            ? { referenceImageUrls: plan.referenceImageUrls }
+            : {}),
         }));
       } catch (error) {
         /**
@@ -245,7 +286,20 @@ export const generateShotVideo = inngest.createFunction(
         throw error;
       }
 
-      await updateAsset(asset.id, { providerJobId, status: 'generating' });
+      await updateAsset(asset.id, {
+        providerJobId,
+        status: 'generating',
+        meta: {
+          attempt,
+          version,
+          ai_generated: true,
+          // The evidence for AC #1, kept where a reviewer can read it back off
+          // the row months later rather than only in a log that has rotated.
+          mode,
+          referenceImageCount: plan.referenceImageUrls.length,
+          referenceCharacters: plan.referenceCharacters,
+        },
+      });
       await setShotStatus(shotId, 'generating');
 
       log.info('video job submitted', {
@@ -253,6 +307,9 @@ export const generateShotVideo = inngest.createFunction(
         operation: 'video.submit',
         durationMs: Date.now() - started,
         providerJobId,
+        mode,
+        referenceImageCount: plan.referenceImageUrls.length,
+        referenceCharacters: plan.referenceCharacters.map((c) => c.name),
       });
 
       return { providerJobId };
@@ -290,7 +347,7 @@ export const generateShotVideo = inngest.createFunction(
         const stored = await ingestFromUrl({
           url: result.url,
           bucket: 'clips',
-          path: clipPath({ userId, episodeId, shotId, attempt }),
+          path: clipPath({ userId, episodeId, shotId, version, attempt }),
         });
 
         await updateAsset(asset.id, {
@@ -299,7 +356,16 @@ export const generateShotVideo = inngest.createFunction(
           durationSeconds: plan.durationSeconds,
           costCents: result.costCents,
           error: null,
-          meta: { attempt, ai_generated: true, bytes: stored.bytes, ...(result.meta ?? {}) },
+          meta: {
+            attempt,
+            version,
+            ai_generated: true,
+            mode: plan.referenceImageUrls.length > 0 ? 'image-to-video' : 'text-to-video',
+            referenceImageCount: plan.referenceImageUrls.length,
+            referenceCharacters: plan.referenceCharacters,
+            bytes: stored.bytes,
+            ...(result.meta ?? {}),
+          },
         });
 
         // Real cost, from the provider — not the estimate.
@@ -310,8 +376,10 @@ export const generateShotVideo = inngest.createFunction(
           provider: provider.id,
           operation: 'video.generate',
           costCents: result.costCents,
-          // One charge per shot per attempt, however many times this step runs.
-          idempotencyKey: `video.generate:${shotId}:${attempt}`,
+          // One charge per shot per take per attempt, however many times this
+          // step runs. The version is part of the key because a regeneration is
+          // a genuinely new charge, not a repeat of the old one.
+          idempotencyKey: `video.generate:${shotId}:v${version}:${attempt}`,
         });
 
         // Not `setShotStatus(shotId, 'ready')`: a shot with dialogue is not ready
@@ -350,9 +418,11 @@ export const generateShotVideo = inngest.createFunction(
 
       if (canRetry) {
         await step.sendEvent('retry', {
-          id: shotVideoEventId(shotId, attempt + 1),
+          id: shotVideoEventId(shotId, attempt + 1, version),
           name: 'shot/video.requested',
-          data: { userId, episodeId, shotId, attempt: attempt + 1 },
+          // Same version: a retry is another go at *this* take, so it overwrites
+          // rather than adding to the history the user can revert through.
+          data: { userId, seriesId, episodeId, shotId, attempt: attempt + 1, version },
         });
         return { shotId, status: 'retrying' as const, attempt, nextAttempt: attempt + 1 };
       }

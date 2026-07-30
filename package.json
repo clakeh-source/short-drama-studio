@@ -16,6 +16,8 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:buckets": "node scripts/create-buckets.mjs",
+    "db:seed": "node scripts/seed.mjs",
+    "orphans": "node scripts/orphans.mjs",
     "inngest:dev": "npx --yes inngest-cli@latest dev -u http://localhost:3000/api/inngest",
     "db:migrate": "drizzle-kit migrate",
     "shotstack:batch": "node scripts/shotstack/render-batch.mjs",

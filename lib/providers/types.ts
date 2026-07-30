@@ -163,8 +163,18 @@ export interface VideoGenInput {
   durationSeconds: number;
   aspectRatio: '9:16';
   seed?: number;
-  /** For character consistency, where the provider supports it. */
-  referenceImageUrl?: string;
+  /**
+   * Stills of the characters in this shot, for character consistency.
+   *
+   * An ordered set rather than one image: a shot can hold two people, and each
+   * of them contributes their canonical reference set. Order is meaningful —
+   * the first entry is the one an adapter sends when its model conditions on a
+   * single image, so callers put the most important character first.
+   *
+   * Present and non-empty is what makes a call image-to-video; empty or absent
+   * is text-to-video. Adapters must not invent a reference from the prompt.
+   */
+  referenceImageUrls?: string[];
 }
 
 export interface VideoProvider {
@@ -178,6 +188,51 @@ export interface VideoProvider {
   estimateCostCents(input: VideoGenInput): number;
   generate(input: VideoGenInput): Promise<{ providerJobId: string }>;
   poll(providerJobId: string): Promise<ProviderResult>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Image                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface ImageGenInput {
+  prompt: string;
+  negativePrompt?: string;
+  /** How many images to produce from this one prompt. */
+  count: number;
+  /**
+   * Vertical by default, matching the video frame.
+   *
+   * A reference still that is landscape while every clip is 9:16 teaches the
+   * video model the wrong framing for the character.
+   */
+  aspectRatio: '9:16' | '1:1';
+  /**
+   * Fixed across a character's stills so they read as the same person.
+   *
+   * Not a guarantee — a diffusion model given one seed and three different
+   * framing instructions produces three related images, not three photographs
+   * of one person. It is the cheapest thing that helps, and it is why the
+   * canonical set is three images rather than one.
+   */
+  seed?: number;
+}
+
+export interface GeneratedImage {
+  url: string;
+  contentType: string;
+}
+
+export interface ImageProvider {
+  readonly id: string;
+  estimateCostCents(input: ImageGenInput): number;
+  /**
+   * Synchronous from the caller's point of view.
+   *
+   * Unlike video, image generation is seconds rather than minutes, so there is
+   * no durable submit/poll split to justify: a job that finishes inside one
+   * request does not need to survive a restart.
+   */
+  generate(input: ImageGenInput): Promise<{ images: GeneratedImage[]; costCents: number }>;
 }
 
 /**

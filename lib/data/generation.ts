@@ -5,8 +5,9 @@ import { db, withUserDb } from '@/lib/db';
 import { assets, characters, episodes, scenes, series, shots } from '@/lib/db/schema';
 import type { Asset, Character, Episode, Series, Shot } from '@/lib/db/schema';
 import { notFound } from '@/lib/api/handler';
-import { signedUrls } from '@/lib/storage';
+import { deleteObjects, signedUrls } from '@/lib/storage';
 import { voiceOverruns } from '@/lib/shots';
+import { log } from '@/lib/log';
 
 /**
  * Reads and writes for the generation pipeline.
@@ -155,10 +156,13 @@ export async function reconcileShotStatus(shotId: string): Promise<ShotStatus> {
   const [shot] = await handle.select().from(shots).where(eq(shots.id, shotId));
   if (!shot) throw notFound('Shot not found');
 
+  // Only the current take. A shot that has been regenerated still owns its
+  // previous versions' rows, and an old `ready` video would otherwise report the
+  // shot finished while the new take was still generating.
   const rows = await handle
     .select({ kind: assets.kind, status: assets.status })
     .from(assets)
-    .where(eq(assets.shotId, shotId));
+    .where(and(eq(assets.shotId, shotId), eq(assets.version, shot.version)));
 
   const needed = requiredAssetKinds(shot);
   const statuses = needed.map((kind) => {
@@ -241,42 +245,66 @@ export async function recordedProviderJobId(assetId: string): Promise<string | n
 /* -------------------------------------------------------------------------- */
 
 /** Phase 3 AC #4: at most this many video jobs live at the provider per user. */
-export const MAX_INFLIGHT_VIDEO_JOBS = 3;
+/**
+ * In-flight video jobs per project.
+ *
+ * Three is the spec's, and it is the right default: it bounds cost and keeps
+ * well inside a provider's rate limits. It is also the single biggest lever on
+ * how long a run takes, and for a multi-minute film that matters — 36 clips at
+ * three at a time is a 24-minute wait, at eight it is nine minutes. Raise it if
+ * your provider tolerates it; the arithmetic is linear and the wall-clock
+ * estimate in lib/runs/estimate.ts follows this number.
+ *
+ * Read once at module load, because the Inngest function's `concurrency` option
+ * is evaluated when the function is defined and the two must not disagree.
+ */
+export const MAX_INFLIGHT_VIDEO_JOBS = (() => {
+  const raw = Number(process.env.VIDEO_CONCURRENCY);
+  // A cap of zero would wedge every project permanently, so nonsense falls back
+  // rather than being honoured.
+  if (!Number.isFinite(raw) || raw < 1) return 3;
+  return Math.min(Math.floor(raw), 24);
+})();
 
 /**
  * How long a claimed slot is honoured before it is treated as abandoned.
  *
  * A process that dies between claiming a slot and recording a terminal status
- * would otherwise hold it forever, and three such deaths would wedge the user's
- * account permanently. The lease is generous relative to a real video job (a
+ * would otherwise hold it forever, and three such deaths would wedge the
+ * project permanently. The lease is generous relative to a real video job (a
  * couple of minutes) so a slow provider is never mistaken for a dead worker.
  */
 export const VIDEO_SLOT_LEASE_MINUTES = 20;
 
 /**
- * Claims one of the user's in-flight video slots for `assetId`, returning
+ * Claims one of the *project's* in-flight video slots for `assetId`, returning
  * whether it succeeded.
+ *
+ * Scoped to the series, not the user: the cap exists to bound cost and rate
+ * limits per project, so someone with two shows in flight gets three slots each.
  *
  * Inngest's `concurrency` option bounds *step execution*, not provider work: the
  * poll loop hands its slot back on every `step.sleep`, so an episode fanned out
  * to 20 shots submitted all 20 to the provider before any of them finished — a
- * measured peak of 20 live jobs against a stated limit of 3. The bound has to be
- * counted where the work actually is, which is the assets table.
+ * measured peak of 20 live jobs against a stated limit of 3. The declared
+ * concurrency key is still there and still useful, but the bound that actually
+ * holds has to be counted where the work is, which is the assets table. A queue
+ * whose workers block on polling would not need this; Inngest's do not block,
+ * and that is the whole difference.
  *
- * The count and the claim are one statement under a per-user advisory lock, so
- * two runs cannot both observe two in flight and both proceed to a third.
+ * The count and the claim are one statement under a per-project advisory lock,
+ * so two runs cannot both observe two in flight and both proceed to a third.
  */
-export async function claimVideoSlot(userId: string, assetId: string): Promise<boolean> {
+export async function claimVideoSlot(seriesId: string, assetId: string): Promise<boolean> {
   return db().transaction(async (tx) => {
-    // Serialises claims for this user only. Released when the transaction ends.
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
+    // Serialises claims for this project only. Released when the transaction ends.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${seriesId}))`);
 
     const rows = await tx.execute<{ inflight: number }>(sql`
       select count(*)::int as inflight
         from assets a
         join episodes e on e.id = a.episode_id
-        join series s on s.id = e.series_id
-       where s.user_id = ${userId}::uuid
+       where e.series_id = ${seriesId}::uuid
          and a.kind = 'video'
          and a.status = 'generating'
          and a.id <> ${assetId}::uuid
@@ -318,8 +346,11 @@ export async function upsertAsset(input: {
   kind: AssetKind;
   provider: string;
   attempt: number;
+  /** The take this belongs to. Defaults to 1 for callers with no versioning. */
+  version?: number;
 }): Promise<Asset> {
   const handle = db();
+  const version = input.version ?? 1;
 
   const [existing] = await handle
     .select()
@@ -328,6 +359,7 @@ export async function upsertAsset(input: {
       and(
         eq(assets.shotId, input.shotId),
         eq(assets.kind, input.kind),
+        eq(assets.version, version),
         sql`coalesce((${assets.meta} ->> 'attempt')::int, 0) = ${input.attempt}`,
       ),
     );
@@ -341,13 +373,84 @@ export async function upsertAsset(input: {
       episodeId: input.episodeId,
       kind: input.kind,
       provider: input.provider,
+      version,
       status: 'queued',
       costCents: 0,
-      meta: { attempt: input.attempt, ai_generated: true },
+      meta: { attempt: input.attempt, version, ai_generated: true },
     })
     .returning();
 
   return created!;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Version history                                                            */
+/* -------------------------------------------------------------------------- */
+
+/** How many takes of a shot survive. Older ones are deleted, storage included. */
+export const KEEP_SHOT_VERSIONS = 3;
+
+/**
+ * Deletes every take of a shot beyond the most recent `KEEP_SHOT_VERSIONS`.
+ *
+ * Storage first, then the rows — the same ordering as everywhere else that owns
+ * both. A row pointing at a deleted object shows up as a broken thumbnail and
+ * can be cleaned up again; an object with no row pointing at it is an invisible
+ * bill nobody will ever look for.
+ *
+ * Run after a regeneration rather than on a schedule, because the moment a
+ * fourth take exists is exactly the moment the first one stopped mattering.
+ */
+export async function pruneShotVersions(
+  shotId: string,
+  keep: number = KEEP_SHOT_VERSIONS,
+): Promise<{ prunedVersions: number[]; deletedObjects: number }> {
+  const handle = db();
+
+  const rows = await handle.select().from(assets).where(eq(assets.shotId, shotId));
+
+  const versions = [...new Set(rows.map((r) => r.version))].sort((a, b) => b - a);
+  const doomed = versions.slice(keep);
+
+  if (doomed.length === 0) return { prunedVersions: [], deletedObjects: 0 };
+
+  const condemned = rows.filter((r) => doomed.includes(r.version));
+  const paths = condemned
+    .map((r) => r.storagePath)
+    .filter((p): p is string => Boolean(p));
+
+  if (paths.length > 0) await deleteObjects(paths);
+
+  await handle.delete(assets).where(
+    inArray(
+      assets.id,
+      condemned.map((r) => r.id),
+    ),
+  );
+
+  log.info('pruned old shot versions', {
+    shotId,
+    operation: 'shot.versions.prune',
+    prunedVersions: doomed,
+    deletedObjects: paths.length,
+  });
+
+  return { prunedVersions: doomed, deletedObjects: paths.length };
+}
+
+/** Every surviving take of a shot, newest first. What the UI's history strip shows. */
+export async function loadShotVersions(shotId: string): Promise<Asset[]> {
+  const rows = await db()
+    .select()
+    .from(assets)
+    .where(and(eq(assets.shotId, shotId), eq(assets.kind, 'video')));
+
+  return rows.sort(
+    (a, b) =>
+      b.version - a.version ||
+      ((b.meta as { attempt?: number } | null)?.attempt ?? 0) -
+        ((a.meta as { attempt?: number } | null)?.attempt ?? 0),
+  );
 }
 
 export async function updateAsset(
@@ -486,12 +589,21 @@ export async function loadEpisodeProgress(
     const attemptOf = (asset: Asset): number =>
       (asset.meta as { attempt?: number } | null)?.attempt ?? 0;
 
-    /** Newest attempt wins when a shot has been retried. */
+    /**
+     * Newest take wins, and within a take, the newest attempt.
+     *
+     * Version first: a regeneration produces a strictly newer take, and it is
+     * the one the board should show even before its clip has landed. Attempt
+     * only breaks ties inside one take.
+     */
     const latest = (shotId: string, kind: AssetKind): Asset | null => {
       const candidates = assetRows.filter((a) => a.shotId === shotId && a.kind === kind);
       if (candidates.length === 0) return null;
       return candidates.reduce((best, current) =>
-        attemptOf(current) >= attemptOf(best) ? current : best,
+        current.version > best.version ||
+        (current.version === best.version && attemptOf(current) >= attemptOf(best))
+          ? current
+          : best,
       );
     };
 

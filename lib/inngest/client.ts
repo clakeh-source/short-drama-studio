@@ -31,11 +31,34 @@ export type Events = {
   'shot/video.requested': {
     data: {
       userId: string;
+      /** The concurrency key: three in-flight video jobs per project. */
+      seriesId: string;
       episodeId: string;
       shotId: string;
       /** 0 for the first go; increments on each automatic or manual retry. */
       attempt: number;
+      /**
+       * Which take this is. Retries share a version; a regeneration gets a new
+       * one, which is what keeps the previous clip rather than overwriting it.
+       */
+      version: number;
     };
+  };
+
+  /** Start an unattended prompt-to-film run. */
+  'run/start.requested': {
+    data: { userId: string; runId: string };
+  };
+
+  /**
+   * A decision at a gate, or the countdown expiring.
+   *
+   * `continue` is also what silence means — the supervisor's `waitForEvent`
+   * timing out is treated as consent, which is what makes a gate skippable
+   * rather than blocking.
+   */
+  'run/gate.resolved': {
+    data: { userId: string; runId: string; action: 'continue' | 'stop' };
   };
 
   /** Assemble an episode's finished clips into a single MP4. */
@@ -74,8 +97,8 @@ export const inngest = new Inngest({
  * means a double-clicked "Generate" is a no-op, while a genuine retry — which
  * increments the attempt — is allowed through.
  */
-export function shotVideoEventId(shotId: string, attempt: number): string {
-  return `shot-video:${shotId}:${attempt}`;
+export function shotVideoEventId(shotId: string, attempt: number, version = 1): string {
+  return `shot-video:${shotId}:v${version}:${attempt}`;
 }
 
 export function shotVoiceEventId(shotId: string, attempt: number): string {

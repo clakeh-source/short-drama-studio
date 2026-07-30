@@ -151,6 +151,12 @@ export function sseRoute<
               ? error.message
               : 'Generation failed. Nothing was saved — you can try again.';
 
+          // An ApiError's `details` is the same field the JSON error envelope
+          // carries, and some of it is load-bearing: a breakdown that fails
+          // schema validation puts the model's raw output here, which is the
+          // only way the caller can see what it actually said.
+          const details = error instanceof ApiError ? error.details : undefined;
+
           log.error(`${config.operation} failed`, {
             operation: config.operation,
             userId: user.id,
@@ -158,7 +164,7 @@ export function sseRoute<
             error: error instanceof Error ? error.message : String(error),
           });
 
-          send('error', { message });
+          send('error', { message, ...(details !== undefined ? { details } : {}) });
         } finally {
           closed = true;
           try {

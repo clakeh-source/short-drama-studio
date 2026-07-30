@@ -33,7 +33,7 @@ export const generateEpisodeAssets = inngest.createFunction(
     const tts = getTtsProvider();
 
     const plan = await step.run('plan', async () => {
-      const { shots } = await loadEpisodeShotsForJob(episodeId, userId);
+      const { shots, series } = await loadEpisodeShotsForJob(episodeId, userId);
 
       if (shots.length === 0) {
         throw new NonRetriableError(
@@ -47,7 +47,12 @@ export const generateEpisodeAssets = inngest.createFunction(
         : shots.filter((s) => s.status !== 'ready');
 
       if (selected.length === 0) {
-        return { shots: [], estimateCents: 0, skipped: 'nothing to do' as const };
+        return {
+          seriesId: series.id,
+          shots: [],
+          estimateCents: 0,
+          skipped: 'nothing to do' as const,
+        };
       }
 
       const estimate = estimateEpisodeCost(selected, video, tts);
@@ -70,10 +75,12 @@ export const generateEpisodeAssets = inngest.createFunction(
       }
 
       return {
+        seriesId: series.id,
         shots: selected.map((s) => ({
           id: s.id,
           hasDialogue: Boolean(s.dialogue?.trim()),
           attempt: s.retryCount,
+          version: s.version,
         })),
         estimateCents: estimate.totalCents,
       };
@@ -82,7 +89,8 @@ export const generateEpisodeAssets = inngest.createFunction(
     // Inngest types a step's return value as JSON-serialised, which widens
     // array members to nullable. Narrow once, here.
     const queuedShots = plan.shots.filter(
-      (shot): shot is { id: string; hasDialogue: boolean; attempt: number } => Boolean(shot),
+      (shot): shot is { id: string; hasDialogue: boolean; attempt: number; version: number } =>
+        Boolean(shot),
     );
 
     if (queuedShots.length === 0) {
@@ -103,9 +111,16 @@ export const generateEpisodeAssets = inngest.createFunction(
       'fan-out',
       queuedShots.flatMap((shot) => [
         {
-          id: shotVideoEventId(shot.id, shot.attempt),
+          id: shotVideoEventId(shot.id, shot.attempt, shot.version),
           name: 'shot/video.requested' as const,
-          data: { userId, episodeId, shotId: shot.id, attempt: shot.attempt },
+          data: {
+            userId,
+            seriesId: plan.seriesId,
+            episodeId,
+            shotId: shot.id,
+            attempt: shot.attempt,
+            version: shot.version,
+          },
         },
         ...(shot.hasDialogue
           ? [

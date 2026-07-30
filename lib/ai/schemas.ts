@@ -159,6 +159,51 @@ export type StoryboardScene = z.infer<typeof storyboardSceneSchema>;
 export type Storyboard = z.infer<typeof storyboardSchema>;
 
 /* -------------------------------------------------------------------------- */
+/* Script breakdown                                                           */
+/*                                                                            */
+/* One model pass from a raw screenplay to scenes and shots.                  */
+/*                                                                            */
+/* Distinct from `storyboardSchema`, which starts from an already-structured   */
+/* script and only plans coverage. A breakdown has to do both at once — find   */
+/* the scene boundaries *and* cut them — because a script the user brought has */
+/* never been through the parser that produces `scriptSchema`.                 */
+/* -------------------------------------------------------------------------- */
+
+export const breakdownShotSchema = z.object({
+  camera: z.enum(CAMERA_VOCABULARY),
+  /** Visual description. Inferred from the action, not copied from it. */
+  action: z.string().min(1).max(600),
+  /**
+   * Verbatim, when the script has a line here.
+   *
+   * The prompt is explicit that this is a transcription and not a rewrite: the
+   * dialogue is the user's writing, it is what gets spoken aloud by TTS, and a
+   * model that "improves" it has silently edited someone's script.
+   */
+  dialogue: z.string().max(400).nullable().optional(),
+  speaker: z.string().max(80).nullable().optional(),
+  /** Names as the script writes them. Mapped to Character rows on persist. */
+  characters: z.array(z.string().max(80)).max(6),
+  /** Capped at the provider's clip ceiling; longer shots are split. */
+  duration_seconds: z.number().min(1).max(15),
+});
+
+export const breakdownSceneSchema = z.object({
+  location: z.string().min(1).max(160),
+  time_of_day: z.string().min(1).max(60),
+  summary: z.string().min(1).max(600),
+  shots: z.array(breakdownShotSchema).min(1).max(30),
+});
+
+export const breakdownSchema = z.object({
+  scenes: z.array(breakdownSceneSchema).min(1).max(20),
+});
+
+export type BreakdownShot = z.infer<typeof breakdownShotSchema>;
+export type BreakdownScene = z.infer<typeof breakdownSceneSchema>;
+export type Breakdown = z.infer<typeof breakdownSchema>;
+
+/* -------------------------------------------------------------------------- */
 /* Content safety                                                             */
 /* -------------------------------------------------------------------------- */
 

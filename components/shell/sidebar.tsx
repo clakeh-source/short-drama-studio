@@ -2,10 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Clapperboard, Film, LibraryBig, Receipt } from 'lucide-react';
+import { Clapperboard, Film, LibraryBig, Receipt, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const NAV = [
+  // First, because it is the whole product: everything below is for picking apart
+  // what this made.
+  { href: '/create', label: 'Create', icon: Sparkles },
   { href: '/series', label: 'Series', icon: Film },
   { href: '/library', label: 'Library', icon: LibraryBig },
   { href: '/usage', label: 'Usage', icon: Receipt },
