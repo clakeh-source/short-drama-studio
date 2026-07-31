@@ -209,12 +209,29 @@ export interface ImageGenInput {
   /**
    * Fixed across a character's stills so they read as the same person.
    *
-   * Not a guarantee — a diffusion model given one seed and three different
-   * framing instructions produces three related images, not three photographs
-   * of one person. It is the cheapest thing that helps, and it is why the
-   * canonical set is three images rather than one.
+   * The weak form of identity. A diffusion model given one seed and three
+   * framing instructions produces three *related* images, not three photographs
+   * of one person — it is the cheapest thing that helps, and it is what you get
+   * when the provider cannot do better.
    */
   seed?: number;
+
+  /**
+   * A photograph the generated image must look like the same person as.
+   *
+   * The strong form. Presence switches the adapter to an identity-preserving
+   * model, which takes the face from this image and the pose, framing and
+   * setting from the prompt. That is the difference between a canonical set
+   * that is one character and one that is three cousins.
+   *
+   * Must be a URL the provider can fetch — these models pull the reference
+   * themselves, so a signed URL needs to outlive the queue wait.
+   *
+   * Ignored by providers whose `supportsIdentity` is false. Callers check that
+   * rather than assuming, because silently dropping it would produce exactly
+   * the drift this field exists to remove, with no sign anything was wrong.
+   */
+  identityImageUrl?: string;
 }
 
 export interface GeneratedImage {
@@ -224,6 +241,15 @@ export interface GeneratedImage {
 
 export interface ImageProvider {
   readonly id: string;
+  /**
+   * Whether `identityImageUrl` does anything here.
+   *
+   * Declared rather than inferred so a caller can *degrade deliberately* — fall
+   * back to a shared seed and record that the set is not identity-locked —
+   * instead of passing a reference into a model that ignores it and getting
+   * drift it has no way to detect.
+   */
+  readonly supportsIdentity: boolean;
   estimateCostCents(input: ImageGenInput): number;
   /**
    * Synchronous from the caller's point of view.

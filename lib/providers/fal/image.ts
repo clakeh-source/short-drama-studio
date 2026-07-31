@@ -26,8 +26,25 @@ const QUEUE_BASE = 'https://queue.fal.run';
  */
 const DEFAULT_MODEL = 'fal-ai/flux/dev';
 
+/**
+ * The identity-preserving model, used when a reference face is supplied.
+ *
+ * PuLID-for-Flux by default: it takes the face from a reference image and
+ * everything else — pose, framing, wardrobe, setting — from the prompt, which
+ * is exactly the split a character's canonical set needs. InstantID and
+ * IP-Adapter FaceID are the same shape and drop straight in here.
+ *
+ * A plain text-to-image model given this slug would ignore the reference and
+ * silently produce drift, which is why `supportsIdentity` is declared rather
+ * than assumed.
+ */
+const DEFAULT_IDENTITY_MODEL = 'fal-ai/flux-pulid';
+
 /** Published Flux dev pricing, per image, in cents. */
 const DEFAULT_CENTS_PER_IMAGE = 3;
+
+/** Identity models run a face encoder on top; they are priced accordingly. */
+const DEFAULT_IDENTITY_CENTS_PER_IMAGE = 5;
 
 /** fal's queue polls fast for images; this ceiling is generous. */
 const POLL_INTERVAL_MS = 1_500;
@@ -47,13 +64,32 @@ export function imageModel(): string {
   return process.env.FAL_IMAGE_MODEL?.trim() || DEFAULT_MODEL;
 }
 
-function centsPerImage(): number {
-  const raw = process.env.FAL_IMAGE_COST_CENTS?.trim();
-  if (!raw) return DEFAULT_CENTS_PER_IMAGE;
+export function identityModel(): string {
+  return process.env.FAL_IMAGE_IDENTITY_MODEL?.trim() || DEFAULT_IDENTITY_MODEL;
+}
+
+/** Which model a request goes to, decided solely by whether a face was given. */
+export function modelFor(input: Pick<ImageGenInput, 'identityImageUrl'>): {
+  model: string;
+  identity: boolean;
+} {
+  const identity = Boolean(input.identityImageUrl?.trim());
+  return { model: identity ? identityModel() : imageModel(), identity };
+}
+
+function centsPerImage(identity: boolean): number {
+  const raw = (
+    identity ? process.env.FAL_IMAGE_IDENTITY_COST_CENTS : process.env.FAL_IMAGE_COST_CENTS
+  )?.trim();
+
+  if (!raw) return identity ? DEFAULT_IDENTITY_CENTS_PER_IMAGE : DEFAULT_CENTS_PER_IMAGE;
 
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) {
-    throw configurationError(`FAL_IMAGE_COST_CENTS="${raw}" is not a non-negative number.`);
+    throw configurationError(
+      `${identity ? 'FAL_IMAGE_IDENTITY_COST_CENTS' : 'FAL_IMAGE_COST_CENTS'}="${raw}" ` +
+        `is not a non-negative number.`,
+    );
   }
   return parsed;
 }
@@ -80,18 +116,25 @@ interface FluxResult {
 
 export class FalImageProvider implements ImageProvider {
   readonly id = 'fal';
+  readonly supportsIdentity = true;
 
   estimateCostCents(input: ImageGenInput): number {
-    return Math.ceil(input.count * centsPerImage());
+    return Math.ceil(input.count * centsPerImage(Boolean(input.identityImageUrl)));
   }
 
   /** The outgoing request, built without sending it. Asserted in tests. */
-  buildRequest(input: ImageGenInput): { url: string; model: string; body: Record<string, unknown> } {
-    const model = imageModel();
+  buildRequest(input: ImageGenInput): {
+    url: string;
+    model: string;
+    identity: boolean;
+    body: Record<string, unknown>;
+  } {
+    const { model, identity } = modelFor(input);
 
     return {
       url: `${QUEUE_BASE}/${model}`,
       model,
+      identity,
       body: {
         prompt: input.prompt,
         image_size: imageSize(input.aspectRatio),
@@ -99,6 +142,20 @@ export class FalImageProvider implements ImageProvider {
         ...(input.seed !== undefined ? { seed: input.seed } : {}),
         // Flux has no negative prompt; models that do read this field.
         ...(input.negativePrompt ? { negative_prompt: input.negativePrompt } : {}),
+        /**
+         * The face to preserve. PuLID names it `reference_image_url`; InstantID
+         * and IP-Adapter FaceID call it `image_url`. Both are sent because they
+         * are mutually exclusive in practice — a model reads the one it knows
+         * and ignores the other — and getting the name wrong means the
+         * reference is silently dropped, which is the failure this whole path
+         * exists to prevent.
+         */
+        ...(identity
+          ? {
+              reference_image_url: input.identityImageUrl,
+              image_url: input.identityImageUrl,
+            }
+          : {}),
       },
     };
   }
@@ -106,7 +163,7 @@ export class FalImageProvider implements ImageProvider {
   async generate(
     input: ImageGenInput,
   ): Promise<{ images: GeneratedImage[]; costCents: number }> {
-    const { url, model, body } = this.buildRequest(input);
+    const { url, model, identity, body } = this.buildRequest(input);
     const auth = { authorization: `Key ${key()}` };
 
     const submission = await fetch(url, {
@@ -119,9 +176,10 @@ export class FalImageProvider implements ImageProvider {
 
     if (!submission.ok || !accepted?.request_id) {
       throw new ProviderRequestError(
-        `fal refused the image request (${submission.status}): ${
-          describe(accepted?.detail) ?? 'no detail'
-        }`,
+        // Names the model, because the two paths use different ones and a 404
+        // here otherwise gives no clue which slug is wrong.
+        `fal refused the ${identity ? 'identity' : 'image'} request to ${model} ` +
+          `(${submission.status}): ${describe(accepted?.detail) ?? 'no detail'}`,
         { retryable: isRetryableStatus(submission.status), status: submission.status },
       );
     }
@@ -177,7 +235,10 @@ export class FalImageProvider implements ImageProvider {
         );
       }
 
-      return { images, costCents: Math.ceil(images.length * centsPerImage()) };
+      return {
+        images,
+        costCents: Math.ceil(images.length * centsPerImage(Boolean(input.identityImageUrl))),
+      };
     }
 
     throw new ProviderRequestError(

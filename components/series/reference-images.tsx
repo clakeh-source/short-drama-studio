@@ -142,13 +142,23 @@ export function ReferenceImages({
 
     setBusy('generating');
     try {
-      const result = await postJson<{ generated: number; costCents: number }>(
-        `/api/characters/${characterId}/generate-stills`,
-        {},
-      );
+      const result = await postJson<{
+        generated: number;
+        costCents: number;
+        identityLocked: boolean;
+      }>(`/api/characters/${characterId}/generate-stills`, {});
+
       toast.success(
         `Generated ${result.generated} reference stills for ${characterName} ` +
           `(${result.costCents}c).`,
+        {
+          // The difference between one person and three lookalikes is invisible
+          // in a thumbnail strip, so it is said rather than left to be noticed
+          // thirty clips later.
+          description: result.identityLocked
+            ? 'Locked to one face — later stills were generated from the first.'
+            : 'Not identity-locked: this provider generates each still separately, so they may not be quite the same person.',
+        },
       );
       // The server owns order and canonical flags; take its word by reloading.
       window.location.reload();

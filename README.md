@@ -1150,7 +1150,32 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
     app walks a tree, and bending it for teardown would be the tail wagging the
     dog.
 
-66. **`/api/health` reports the queue, and says when it did not probe it.** The
+67. **A character's stills are generated hero-first, then conditioned on that
+    face.** Three images from one prompt and one seed are three people who match
+    a description; two of them generated from the *first one's photograph* are
+    one person in three poses. That ordering is the whole mechanism, and it
+    costs an extra round trip — the hero has to be stored and signed before the
+    rest can reference it.
+
+68. **`supportsIdentity` is declared, not inferred.** A reference passed to a
+    model that ignores it produces exactly the drift the reference exists to
+    remove, with nothing to distinguish the result from a set that worked. So
+    providers declare the capability, callers degrade deliberately, and
+    `identityLocked` comes back on the result and into the toast — because a set
+    that drifted looks identical to one that did not until thirty clips later.
+
+69. **The identity reference is sent under two field names.** PuLID calls it
+    `reference_image_url`; InstantID and IP-Adapter FaceID call it `image_url`.
+    They are mutually exclusive in practice — a model reads the one it knows —
+    and guessing wrong drops the reference in silence.
+
+70. **What this does not fix: multi-character shots.** Kling conditions on one
+    image per clip, so only the first-billed character's still is sent. Their
+    face is stable across every shot they appear in; a second character in the
+    same shot is still coming from the prompt alone. Fixing that needs a model
+    that accepts several identities per generation.
+
+71. **`/api/health` reports the queue, and says when it did not probe it.** The
     brief asks for Redis connection status. Locally the equivalent is the Inngest
     dev server, which has a `/health` endpoint worth pinging. In production the
     queue is Inngest Cloud, which exposes no unauthenticated probe — so that

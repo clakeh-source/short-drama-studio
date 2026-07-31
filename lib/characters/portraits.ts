@@ -11,6 +11,7 @@ import {
   deleteObjects,
   downloadToBuffer,
   referenceImagePath,
+  signedUrl,
   uploadBuffer,
 } from '@/lib/storage';
 import { log } from '@/lib/log';
@@ -50,6 +51,16 @@ const FRAMINGS = [
 ] as const;
 
 /**
+ * How long the hero still stays fetchable while the rest are generated.
+ *
+ * The identity model pulls the reference itself, so this has to outlive the
+ * queue wait for every remaining framing. Generous, because the failure is
+ * silent: an expired URL means the model generates from the prompt alone and
+ * the set drifts, with nothing to distinguish it from a set that worked.
+ */
+const HERO_URL_TTL_SECONDS = 2 * 60 * 60;
+
+/**
  * Style shared by every still, so the set reads as one shoot.
  *
  * Deliberately plain: these are reference photographs, not frames of the film.
@@ -67,6 +78,15 @@ export interface GeneratedPortraits {
   costCents: number;
   /** Ids of the new rows, all of them canonical. */
   imageIds: string[];
+  /**
+   * Whether the set is one person or three cousins.
+   *
+   * True when every still after the first was conditioned on the first one's
+   * face. False when the provider cannot do that and the set falls back to a
+   * shared seed — recorded rather than hidden, because the difference is
+   * invisible in the data and very visible on screen.
+   */
+  identityLocked: boolean;
 }
 
 /**
@@ -102,53 +122,89 @@ export async function generateCharacterPortraits(
 
   const provider = getImageProvider();
 
-  // One seed for the whole set, so the images are siblings rather than strangers.
+  // The weak form of identity, and the fallback when the provider has no better.
   const seed = Math.floor(Math.random() * 2_147_483_647);
 
-  const generated: Array<{ buffer: Buffer; contentType: string }> = [];
-  let costCents = 0;
+  /**
+   * The first still is generated from the prompt alone and every later one is
+   * generated from *its face*.
+   *
+   * That ordering is the whole mechanism. Generating all three from the same
+   * text gives three people who match a description; generating two of them
+   * from the first one's photograph gives one person in three poses. It costs
+   * an extra round trip — the hero has to be stored and signed before the rest
+   * can reference it — and that is the price of the set being coherent.
+   */
+  const framings = FRAMINGS.slice(0, count);
+  const stored: Array<{
+    storagePath: string;
+    bytes: number;
+    contentType: string;
+    orderIndex: number;
+  }> = [];
 
-  for (const framing of FRAMINGS.slice(0, count)) {
+  let costCents = 0;
+  let heroUrl: string | null = null;
+  let identityLocked = false;
+
+  for (const [index, framing] of framings.entries()) {
+    const conditioned = Boolean(heroUrl) && provider.supportsIdentity;
+
     const result = await provider.generate({
       prompt: `${appearance}. ${framing}. ${STYLE}`,
       count: 1,
       aspectRatio: '9:16',
       seed,
+      ...(conditioned ? { identityImageUrl: heroUrl! } : {}),
     });
 
     costCents += result.costCents;
+    if (conditioned) identityLocked = true;
 
-    for (const image of result.images) {
-      // Pulled into memory here rather than handed to storage as a URL: the
-      // provider's CDN link expires, and a reference the video model cannot
-      // fetch later is a character whose face silently changes.
-      const downloaded = await downloadToBuffer(image.url);
-      generated.push({
-        buffer: downloaded.buffer,
-        contentType: image.contentType || downloaded.contentType,
-      });
+    const image = result.images[0];
+    if (!image) continue;
+
+    // Pulled into memory rather than handed to storage as a URL: the provider's
+    // CDN link expires, and a reference the video model cannot fetch later is a
+    // character whose face silently changes.
+    const downloaded = await downloadToBuffer(image.url);
+    const contentType = image.contentType || downloaded.contentType;
+
+    const object = await uploadBuffer({
+      bucket: 'references',
+      path: referenceImagePath({
+        userId,
+        characterId,
+        objectId: randomUUID(),
+        extension: contentType === 'image/png' ? 'png' : 'jpg',
+      }),
+      buffer: downloaded.buffer,
+      contentType,
+    });
+
+    stored.push({ ...object, orderIndex: index });
+
+    // Sign the hero once it exists, so the remaining framings can be built on
+    // it. Signed rather than public because the bucket is private and these are
+    // a user's characters, not stock art.
+    if (index === 0 && provider.supportsIdentity) {
+      heroUrl = await signedUrl(object.storagePath, HERO_URL_TTL_SECONDS);
+
+      if (!heroUrl) {
+        // Without a fetchable hero the rest cannot be conditioned on it. Worth
+        // saying: the set will still be produced, just not identity-locked.
+        log.warn('could not sign the hero still; falling back to a shared seed', {
+          userId,
+          characterId,
+          operation: 'character.portraits.identity.unavailable',
+        });
+      }
     }
   }
 
-  if (generated.length === 0) {
+  if (stored.length === 0) {
     throw badRequest('The image model returned nothing to use as a reference.');
   }
-
-  const stored = await Promise.all(
-    generated.map((image, index) =>
-      uploadBuffer({
-        bucket: 'references',
-        path: referenceImagePath({
-          userId,
-          characterId,
-          objectId: randomUUID(),
-          extension: image.contentType === 'image/png' ? 'png' : 'jpg',
-        }),
-        buffer: image.buffer,
-        contentType: image.contentType,
-      }).then((object) => ({ ...object, orderIndex: index })),
-    ),
-  );
 
   /**
    * The set being replaced, read before anything is written.
@@ -200,6 +256,7 @@ export async function generateCharacterPortraits(
     operation: 'character.portraits.generate',
     provider: provider.id,
     generated: stored.length,
+    identityLocked,
     costCents,
   });
 
@@ -209,6 +266,7 @@ export async function generateCharacterPortraits(
     generated: stored.length,
     costCents,
     imageIds,
+    identityLocked,
   };
 }
 

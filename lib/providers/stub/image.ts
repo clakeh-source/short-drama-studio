@@ -84,6 +84,7 @@ function hash(value: string): number {
 
 export class StubImageProvider implements ImageProvider {
   readonly id = 'stub';
+  readonly supportsIdentity = true;
 
   estimateCostCents(input: ImageGenInput): number {
     return Math.max(1, input.count * CENTS_PER_IMAGE);
@@ -100,7 +101,19 @@ export class StubImageProvider implements ImageProvider {
 
     await delay(Math.min(STUB_LATENCY_MS, 500));
 
-    const base = hash(input.prompt);
+    /**
+     * The identity channel, made observable.
+     *
+     * When a reference face is supplied the red channel is derived from *it*
+     * rather than from the prompt, so every image conditioned on the same face
+     * shares that value while the prompt still varies the rest. That is what
+     * lets a test assert "these three stills are the same person" against a
+     * fake provider — without it, identity-preservation would be a code path
+     * nothing could check until it was pointed at a real model.
+     */
+    const identity = input.identityImageUrl?.trim();
+    const base = hash(identity ?? input.prompt);
+
     const images = Array.from({ length: input.count }, (_, i) => {
       const seed = hash(`${input.prompt}:${i}`);
       return {

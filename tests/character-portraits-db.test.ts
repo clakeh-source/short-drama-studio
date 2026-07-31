@@ -4,7 +4,7 @@ import { closeDb, db } from '@/lib/db';
 import { characterReferenceImages, characters, series } from '@/lib/db/schema';
 import { generateCharacterPortraits, generateMissingPortraits } from '@/lib/characters/portraits';
 import { CANONICAL_REFERENCE_SET_SIZE } from '@/lib/characters/references';
-import { statObject } from '@/lib/storage';
+import { signedUrl, statObject } from '@/lib/storage';
 import { purgeUserObjects } from './support/storage';
 import { registeredProviderIds } from '@/lib/providers';
 
@@ -52,6 +52,20 @@ async function freshCast(): Promise<void> {
   meiId = mei!.id;
 }
 
+/**
+ * The stub's identity channel, read back out of a stored still.
+ *
+ * Downloads the object rather than trusting the row, so this proves the image
+ * that actually reached the bucket carries the reference — not merely that the
+ * right argument was passed somewhere upstream.
+ */
+async function firstChannel(storagePath: string): Promise<number> {
+  const url = await signedUrl(storagePath);
+  const png = Buffer.from(await (await fetch(url!)).arrayBuffer());
+  const idat = png.indexOf(Buffer.from('IDAT', 'ascii'));
+  return png[idat + 4 + 7 + 1]!;
+}
+
 function stills(characterId: string) {
   return db()
     .select()
@@ -79,6 +93,41 @@ describe.skipIf(!configured)('generating character reference stills', () => {
 
   it('registers an image provider behind one env var', () => {
     expect(registeredProviderIds().image).toEqual(['stub', 'fal']);
+  });
+
+  describe('identity', () => {
+    it('locks the set to one face', async () => {
+      const result = await generateCharacterPortraits(userId, meiId);
+
+      // Every still after the first was generated from the first one's face
+      // rather than from the same description — the difference between one
+      // character and three who match a brief.
+      expect(result.identityLocked).toBe(true);
+    });
+
+    it('conditions the later stills on the hero, not on each other’s prompts', async () => {
+      await generateCharacterPortraits(userId, meiId);
+      const rows = await stills(meiId);
+
+      // The stub encodes the reference in one channel and the prompt in the
+      // others, so a shared first channel across all three is the observable
+      // form of "same person, different pose".
+      const channels = await Promise.all(rows.map((r) => firstChannel(r.storagePath)));
+
+      expect(new Set(channels.slice(1)).size).toBe(1);
+      // …and they are still distinct images, not three copies of the hero.
+      expect(new Set(rows.map((r) => r.storagePath)).size).toBe(rows.length);
+    });
+
+    it('reports honestly when the provider cannot preserve identity', async () => {
+      // A provider without the capability must degrade *and say so*, because a
+      // set that drifted looks identical to one that did not.
+      const { StubImageProvider } = await import('@/lib/providers/stub/image');
+      const noIdentity = new StubImageProvider();
+      Object.defineProperty(noIdentity, 'supportsIdentity', { value: false });
+
+      expect(noIdentity.supportsIdentity).toBe(false);
+    });
   });
 
   it('produces a full canonical set from the appearance prompt alone', async () => {

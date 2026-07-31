@@ -58,6 +58,10 @@ const serverEnvSchema = z.object({
   // Text-to-image, used for character reference stills.
   FAL_IMAGE_MODEL: z.string().min(1).default('fal-ai/flux/dev'),
   FAL_IMAGE_COST_CENTS: z.coerce.number().nonnegative().optional(),
+  // Identity-preserving model: takes the face from a reference still and
+  // everything else from the prompt, so a character's set is one person.
+  FAL_IMAGE_IDENTITY_MODEL: z.string().min(1).default('fal-ai/flux-pulid'),
+  FAL_IMAGE_IDENTITY_COST_CENTS: z.coerce.number().nonnegative().optional(),
   FAL_KLING_EXTRA_INPUT: z.string().optional(),
 
   ELEVENLABS_API_KEY: z.string().optional(),
