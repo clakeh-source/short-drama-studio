@@ -12,8 +12,13 @@
  * Read-only by default.
  *
  *   pnpm orphans            # report
- *   pnpm orphans --delete   # remove them
+ *   pnpm orphans --list     # report, and write orphans.log
+ *   pnpm orphans --delete   # remove them, after writing orphans.log
+ *
+ * `--delete` cannot be undone, so it writes every key it is about to remove to
+ * `orphans.log` first. That file is the only record afterwards.
  */
+import { appendFile } from 'node:fs/promises';
 import { config } from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import postgres from 'postgres';
@@ -43,12 +48,27 @@ async function walk(bucket, prefix = '', depth = 0) {
 }
 
 try {
+  /**
+   * Every column in the schema that names a stored object.
+   *
+   * Miss one and this deletes live data, so it is written as the exhaustive
+   * list and checked against the schema rather than assembled from memory:
+   *
+   *   grep -nE "text\('.*storage_path'\)" lib/db/schema.ts
+   *
+   * `episodes.output_storage_path` was missing from the first version of this
+   * script. It duplicates the latest ready render, so most of the time the same
+   * object is also named by `renders` and nothing would have gone wrong — but an
+   * episode whose render rows had been pruned would have had its finished film
+   * deleted as an orphan.
+   */
   const referenced = new Set(
     [
       ...(await sql`select storage_path from assets where storage_path is not null`),
       ...(await sql`select storage_path from renders where storage_path is not null`),
       ...(await sql`select storage_path from character_reference_images`),
       ...(await sql`select music_storage_path storage_path from series where music_storage_path is not null`),
+      ...(await sql`select output_storage_path storage_path from episodes where output_storage_path is not null`),
     ].map((r) => r.storage_path),
   );
 
@@ -66,6 +86,11 @@ try {
       `${bucket.padEnd(11)} ${String(objects.length).padStart(4)} objects, ` +
         `${String(orphans.length).padStart(4)} orphaned (${(bytes / 1024 / 1024).toFixed(2)}MB)`,
     );
+    // Deleting objects cannot be undone, so what went is written down first.
+    if (orphans.length > 0 && (process.argv.includes('--delete') || process.argv.includes('--list'))) {
+      await appendFile('orphans.log', orphans.map((o) => `${o.key}\t${o.bytes}\n`).join(''));
+    }
+
     if (process.argv.includes('--delete') && orphans.length > 0) {
       const keys = orphans.map((o) => o.key.slice(bucket.length + 1));
       const { error } = await supabase.storage.from(bucket).remove(keys);
