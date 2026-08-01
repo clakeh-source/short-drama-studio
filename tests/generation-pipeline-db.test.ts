@@ -160,9 +160,48 @@ describe.skipIf(!hasDatabase)('the generation pipeline, against the database', (
       // Four stills uploaded, three canonical — the fourth is history, not input.
       expect(set.urls).toHaveLength(CANONICAL_REFERENCE_SET_SIZE);
       expect(set.characters).toEqual([
-        { id: meiId, name: 'Mei Lin', stills: CANONICAL_REFERENCE_SET_SIZE },
+        { id: meiId, name: 'Mei Lin', stills: CANONICAL_REFERENCE_SET_SIZE, urls: set.urls },
       ]);
       for (const url of set.urls) expect(url).toMatch(/^https:\/\//);
+    });
+
+    it('keeps each character’s stills grouped under them', async () => {
+      const [daniel] = await db()
+        .insert(characters)
+        .values({ seriesId, name: 'Daniel Voss', appearancePrompt: 'a man in his forties' })
+        .returning({ id: characters.id });
+
+      await giveStills(meiId, 3);
+      await giveStills(daniel!.id, 3);
+
+      const set = await loadShotReferenceSet([meiId, daniel!.id]);
+
+      // Six stills of two people, not one six-angle stranger. A model that holds
+      // several identities has to be told which face is which, and the flat list
+      // cannot express that — three angles of one person and one angle each of
+      // three people are the same six URLs.
+      const [mei, voss] = set.characters;
+      expect(mei!.urls).toHaveLength(CANONICAL_REFERENCE_SET_SIZE);
+      expect(voss!.urls).toHaveLength(CANONICAL_REFERENCE_SET_SIZE);
+      for (const url of mei!.urls) expect(url).toContain(meiId);
+      for (const url of voss!.urls) expect(url).toContain(daniel!.id);
+    });
+
+    it('flattens the groups in billing order, so the two views agree', async () => {
+      const [daniel] = await db()
+        .insert(characters)
+        .values({ seriesId, name: 'Daniel Voss', appearancePrompt: 'a man in his forties' })
+        .returning({ id: characters.id });
+
+      await giveStills(meiId, 3);
+      await giveStills(daniel!.id, 3);
+
+      const set = await loadShotReferenceSet([meiId, daniel!.id]);
+
+      // `urls` is derived from `characters`, so a caller that reads one and a
+      // reviewer who reads the other are looking at the same request.
+      expect(set.urls).toEqual(set.characters.flatMap((c) => c.urls));
+      expect(set.characters.reduce((n, c) => n + c.stills, 0)).toBe(set.urls.length);
     });
 
     it('returns nothing for a character below the canonical threshold', async () => {

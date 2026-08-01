@@ -14,11 +14,32 @@ import { log } from '@/lib/log';
  * and the `shot.characterIds` the event already carried, rather than RLS.
  */
 
-export interface ShotReferenceSet {
-  /** Signed URLs, in the order the provider should prefer them. */
+/** One character's canonical stills, kept together. */
+export interface ShotReferenceCharacter {
+  id: string;
+  name: string;
+  /**
+   * This character's signed stills, in canonical order.
+   *
+   * Grouped rather than merged into the flat list because a model that can hold
+   * more than one identity needs to be told *which face is which* — several
+   * angles of one person and one angle each of several people are the same
+   * flat list and completely different instructions.
+   */
   urls: string[];
-  /** What went into the set, for the log and the asset's meta. */
-  characters: Array<{ id: string; name: string; stills: number }>;
+  /** `urls.length`, named for the log and the asset's meta. */
+  stills: number;
+}
+
+export interface ShotReferenceSet {
+  /**
+   * Every still, flattened in billing order — the shape a single-image model
+   * wants. Derived from `characters` rather than built alongside it, so the two
+   * cannot disagree about what was sent.
+   */
+  urls: string[];
+  /** The same stills, grouped by who is in them. */
+  characters: ShotReferenceCharacter[];
 }
 
 /**
@@ -82,9 +103,34 @@ export async function loadShotReferenceSet(
     REFERENCE_URL_TTL_SECONDS,
   );
 
-  const urls = ordered
-    .map((row) => signed.get(row.storagePath))
-    .filter((url): url is string => Boolean(url));
+  /**
+   * Grouped by character, and only from stills that actually signed.
+   *
+   * Counting the rows instead would report three stills for a character whose
+   * third object is missing from the bucket — a number describing the database
+   * rather than the request, in a field read back later to answer what a clip
+   * was conditioned on.
+   */
+  const byCharacter = new Map<string, ShotReferenceCharacter>();
+  for (const row of ordered) {
+    const url = signed.get(row.storagePath);
+    if (!url) continue;
+
+    const existing = byCharacter.get(row.characterId);
+    if (existing) existing.urls.push(url);
+    else byCharacter.set(row.characterId, { id: row.characterId, name: row.name, urls: [url], stills: 0 });
+  }
+
+  // `grouped`, not `characters`: that name belongs to the table this file
+  // queries, and shadowing it here compiles as something else entirely.
+  const grouped = [...byCharacter.values()].map((character) => ({
+    ...character,
+    stills: character.urls.length,
+  }));
+
+  // Flattened from the groups, so "what went to the model" and "who is in it"
+  // are two views of one thing rather than two lists that can drift apart.
+  const urls = grouped.flatMap((character) => character.urls);
 
   if (urls.length < ordered.length) {
     // Worth saying out loud. A reference that failed to sign does not fail the
@@ -97,12 +143,5 @@ export async function loadShotReferenceSet(
     });
   }
 
-  const byCharacter = new Map<string, { id: string; name: string; stills: number }>();
-  for (const row of ordered) {
-    const existing = byCharacter.get(row.characterId);
-    if (existing) existing.stills += 1;
-    else byCharacter.set(row.characterId, { id: row.characterId, name: row.name, stills: 1 });
-  }
-
-  return { urls, characters: [...byCharacter.values()] };
+  return { urls, characters: grouped };
 }
