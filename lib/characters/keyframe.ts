@@ -9,8 +9,8 @@ import type { ShotReferenceSet } from '@/lib/characters/reference-set';
 /**
  * The first frame of a shot, drawn before the shot is filmed.
  *
- * Kling conditions on exactly one image per clip — a start frame — which left
- * two problems that look like one:
+ * This was built to solve two problems at once, back when the video model was
+ * thought to condition on exactly one image per clip:
  *
  *   1. In a two-hander, only the first-billed character's portrait was sent.
  *      The second person was described in the prompt and drawn from scratch, so
@@ -19,11 +19,20 @@ import type { ShotReferenceSet } from '@/lib/characters/reference-set';
  *      grey backdrop and had to travel to the harbour terminal in five seconds,
  *      which is a bad use of the only frame the model is sure about.
  *
- * Both are the same mistake: conditioning on a picture of a person when what is
- * needed is a picture of the *shot*. So this draws that picture — the right
- * location, the right framing, the right people — from the shot's own prompt
- * with every character's face supplied as an identity reference, and hands that
- * to the video model instead.
+ * **The first of those is no longer this file's job.** Kling's image-to-video
+ * endpoint takes `elements` — a group of stills per character — so identity is
+ * now held where it belongs, at the video call, for every character in the shot
+ * rather than for as many faces as one image model could encode. See
+ * `lib/providers/fal/elements.ts`.
+ *
+ * The second problem is still real and still worth a picture: elements say who
+ * is in the clip and nothing whatever about where it is or how it is framed.
+ * So the keyframe stays, as a *composition* — the right location, the right
+ * blocking, the right lens — and the video model gets it as a start frame.
+ *
+ * It is still drawn with identity conditioning even though identity is handled
+ * downstream, because a start frame showing different faces than the elements
+ * would put the two instructions in conflict on frame one.
  *
  * The keyframe is stored like any other asset, so a reviewer can see the frame a
  * clip was built from, and a regeneration can reuse it.
@@ -85,10 +94,12 @@ export async function buildShotKeyframe(
   const provider = getImageProvider();
 
   /**
-   * With no faces to preserve there is still a case for a keyframe — it would
-   * set the location — but not a strong one: a text-to-video clip generated
-   * from the same prompt is as good and costs one fewer image. Keyframes exist
-   * for identity, so no identity means no keyframe.
+   * A shot with nobody in it gets no keyframe.
+   *
+   * The composition argument would apply here too — the frame would still set
+   * the location. But a shot with no cast goes to text-to-video, which is given
+   * the same prompt and arrives at the same place for one image less. The
+   * keyframe earns its 5c only where there are people to place in the frame.
    */
   if (input.references.urls.length === 0 || !provider.supportsIdentity) return null;
 
@@ -133,10 +144,12 @@ export async function buildShotKeyframe(
    * How many faces the model *actually* read — the provider's declared capacity,
    * capped by how many were available.
    *
-   * A two-hander sent to a single-identity model conditions on one face and the
-   * other character is still drawn from the prompt. Recorded rather than
-   * assumed, because "we sent two" and "it used two" are different claims and
-   * only the second one fixes the two-hander.
+   * This is a fact about the frame, not about the clip. It used to be the
+   * number that answered "did the two-hander hold", and it is not that any
+   * more: the clip's identities come from the video call's elements, and this
+   * says only how many of them the start frame managed to show. A low number
+   * here now means a start frame that under-represents its own cast, which is
+   * worth knowing and is no longer the whole story.
    */
   const facesUsed = Math.min(provider.identityCapacity, input.references.urls.length);
 

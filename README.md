@@ -1176,7 +1176,8 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
     Both are the same mistake: conditioning on a picture of a person when what
     is needed is a picture of the shot. Each shot now gets a **keyframe** drawn
     from its own prompt with every character's stills as identity references,
-    and that becomes the start frame.
+    and that becomes the start frame. (Half of this is now handled better
+    upstream — see #75.)
 
 71. **`identityCapacity` is declared, and `facesUsed` is recorded.** "We sent
     two references" and "the model conditioned on two" are different claims, and
@@ -1208,3 +1209,33 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
     queue is Inngest Cloud, which exposes no unauthenticated probe — so that
     branch reports that the app is configured to reach it and sets
     `probed: false`, rather than claiming a connection it never made.
+
+75. **Identity belongs at the video call, not at the frame before it.** The
+    keyframe above was built on the belief that Kling conditions on exactly one
+    image, so several faces had to be composited into that image first. It does
+    not: `elements` takes a group of stills *per character*, and the prompt
+    points at them by position. Checking fal's OpenAPI schema rather than its
+    prose also turned up that the start frame had been going under a field name
+    the endpoint does not define — `image_url` instead of `start_image_url` — so
+    every image-to-video call ever made was malformed, invisibly, because the
+    path had never run against live fal.
+
+76. **The keyframe stayed anyway, with its job cut in half.** Elements say who
+    is in the clip and nothing about where it is or how it is framed, and a clip
+    that opens already in the harbour terminal is worth an image per shot. So
+    both are sent: the keyframe as `start_image_url` for composition, the
+    elements for identity. It is still drawn *with* identity conditioning, even
+    though identity is now held downstream — a first frame showing different
+    faces than the elements would put the two instructions in conflict on frame
+    one. `SHOT_KEYFRAMES=off` now costs composition and not character
+    consistency, which is a different trade than the one that setting used to
+    describe.
+
+77. **Rewriting the prompt is the risky part, so it was checked against real
+    prompts.** Kling matches elements by position (`@Element1`), and our prompts
+    name people in prose a language model wrote. The substitution is whole-word,
+    any script, any case, full names before bare first names, and refuses to
+    guess when two characters share a first name — a wrongly tagged face is
+    worse than an untagged mention, and neither is visible until the clip
+    exists. Run over 40 real storyboard prompts: 41 of 42 cast slots tagged by
+    name, one introduced by the fallback clause.

@@ -65,8 +65,10 @@ const serverEnvSchema = z.object({
   // How many faces the identity model reads. 1 for PuLID/InstantID; raise it
   // for a multi-identity model and two-handers condition on both people.
   FAL_IMAGE_IDENTITY_CAPACITY: z.coerce.number().int().min(1).max(4).optional(),
-  // `off` disables per-shot keyframes and falls back to conditioning on the
-  // character stills, which is cheaper and worse.
+  // `off` disables per-shot keyframes. They set the location and framing of a
+  // clip's first frame; identity is held separately by the video call's
+  // elements, so turning them off saves an image per shot and costs composition,
+  // not character consistency.
   SHOT_KEYFRAMES: z.enum(['on', 'off']).optional(),
   FAL_KLING_EXTRA_INPUT: z.string().optional(),
 
