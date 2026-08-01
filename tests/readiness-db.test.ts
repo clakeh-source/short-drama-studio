@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { closeDb, db } from '@/lib/db';
 import { assets, characters, episodes, scenes, series, shots, usageLog } from '@/lib/db/schema';
 import {
@@ -256,10 +256,14 @@ describe.skipIf(!hasDatabase).sequential('shot readiness and admission control',
     });
 
     it('frees a slot when a job reaches a terminal status', async () => {
+      // Scoped to this episode. Unscoped, this counts every suite running
+      // against the same database at the same time, and fails whenever another
+      // file happens to have a video job in flight — a flake that says nothing
+      // about admission control.
       const inflight = await db()
         .select()
         .from(assets)
-        .where(eq(assets.status, 'generating'));
+        .where(and(eq(assets.episodeId, episodeId), eq(assets.status, 'generating')));
       expect(inflight.length).toBe(MAX_INFLIGHT_VIDEO_JOBS);
 
       await updateAsset(inflight[0]!.id, { status: 'ready', costCents: 1 });

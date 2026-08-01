@@ -83,6 +83,13 @@ const KNOWN_CAPACITY: Array<{ pattern: RegExp; capacity: number }> = [
   { pattern: /pulid/i, capacity: 1 },
   { pattern: /instant-?id/i, capacity: 1 },
   { pattern: /ip-?adapter/i, capacity: 1 },
+  // PhotoMaker builds one identity from several photos of the *same* person,
+  // supplied as a zip archive. Several faces is not something it can do.
+  { pattern: /photomaker/i, capacity: 1 },
+  // MiniMax subject-reference takes a single `image_url`.
+  { pattern: /subject-reference/i, capacity: 1 },
+  // Kontext Max Multi requires `image_urls` and composes from all of them.
+  { pattern: /kontext\/max\/multi/i, capacity: 4 },
 ];
 
 /** What the configured model is known to read, or null if it is not known. */
@@ -219,7 +226,11 @@ export class FalImageProvider implements ImageProvider {
           ? {
               reference_image_url: faces[0],
               image_url: faces[0],
-              ...(faces.length > 1 ? { reference_image_urls: faces } : {}),
+              // FLUX Kontext Max Multi *requires* `image_urls` and reads every
+              // entry, which is what makes a two-hander possible. Sent whenever
+              // there is more than one face, alongside the scalar forms the
+              // single-identity models read.
+              ...(faces.length > 1 ? { reference_image_urls: faces, image_urls: faces } : {}),
             }
           : {}),
       },

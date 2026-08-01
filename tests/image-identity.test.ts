@@ -157,6 +157,50 @@ describe('identity capacity', () => {
     expect(identityCapacity()).toBe(1);
   });
 
+  it('knows the multi-identity model the app ships pointed at', () => {
+    // Verified against fal's own OpenAPI schema for the endpoint, which lists
+    // `image_urls` as a required array. This is the one model in the list that
+    // makes a capacity above 1 mean anything.
+    expect(knownCapacityFor('fal-ai/flux-pro/kontext/max/multi')).toBe(4);
+  });
+
+  it('does not mistake single-subject models for multi-identity ones', () => {
+    // PhotoMaker takes a zip of photos of *one* person; MiniMax's
+    // subject-reference endpoint takes a single `image_url`. Both look like they
+    // might read a set, and neither does.
+    expect(knownCapacityFor('fal-ai/photomaker')).toBe(1);
+    expect(knownCapacityFor('fal-ai/minimax/image-01/subject-reference')).toBe(1);
+  });
+
+  it('sends kontext the field it requires', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/flux-pro/kontext/max/multi';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    const faces = ['mei.png', 'daniel.png'];
+    const { body, facesUsed } = new FalImageProvider().buildRequest({
+      ...base,
+      identityImageUrls: faces,
+    });
+
+    // `image_urls` is required by this endpoint, not optional — omitting it is a
+    // 422, and sending only the scalar would compose the shot from one face.
+    expect(facesUsed).toBe(2);
+    expect(body.image_urls).toEqual(faces);
+    expect(body.reference_image_urls).toEqual(faces);
+  });
+
+  it('leaves the multi-face fields off a single-face request', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/flux-pro/kontext/max/multi';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    // One character in the shot is the common case; the scalar forms are what
+    // every single-identity model reads, so they stay the baseline.
+    const { body } = new FalImageProvider().buildRequest({ ...base, identityImageUrls: [FACE] });
+
+    expect(body.image_url).toBe(FACE);
+    expect(body).not.toHaveProperty('image_urls');
+  });
+
   it('honours the capacity for a model it does not recognise', () => {
     // Refusing unknown models would make every new one unusable until this list
     // learned about it. Trust, having warned about the ones we do know.
