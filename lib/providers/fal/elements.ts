@@ -31,6 +31,45 @@ export const MAX_ELEMENTS = 4;
 /** "Additional reference images from different angles. 1-3 images supported." */
 export const MAX_ANGLES_PER_ELEMENT = 3;
 
+/**
+ * What a given Kling model actually accepts.
+ *
+ * The model id is configurable, and the generations differ in ways that fail
+ * *silently* rather than loudly: v1.6, v2.1 and v2.5 take the start frame as
+ * `image_url` and have no `elements` field at all, while v3 and o1 take
+ * `start_image_url` and do. Send a v3 body to v2.1 and the start frame is
+ * dropped — every clip becomes text-to-video with a longer request, and the
+ * only symptom is that faces drift.
+ *
+ * Verified against fal's OpenAPI schema for each endpoint rather than its docs
+ * prose, which is how the `image_url`/`start_image_url` split was found in the
+ * first place.
+ */
+export interface KlingCapabilities {
+  /** Field the start frame goes in. */
+  startImageField: 'start_image_url' | 'image_url';
+  /** Whether the model reads `elements`, i.e. can hold several faces at once. */
+  elements: boolean;
+}
+
+const V3_AND_LATER: KlingCapabilities = { startImageField: 'start_image_url', elements: true };
+const PRE_V3: KlingCapabilities = { startImageField: 'image_url', elements: false };
+
+export function capabilitiesFor(model: string): KlingCapabilities {
+  // Anchored on a path segment so `v1.6` cannot match inside a customer's own
+  // model name, and so `v10` will not one day read as `v1`.
+  if (/\/(v1(\.\d+)?|v2(\.\d+)?(-\w+)?)\//i.test(model)) return PRE_V3;
+
+  /**
+   * Everything else — v3, o1, and anything newer — gets the current shape.
+   *
+   * An unknown model is assumed to be newer rather than older, because that is
+   * the direction model ids move and because the alternative silently degrades
+   * a capable model to a start frame it cannot read.
+   */
+  return V3_AND_LATER;
+}
+
 /** What one character looks like in the request body. */
 export interface KlingElement {
   frontal_image_url: string;

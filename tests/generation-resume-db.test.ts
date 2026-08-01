@@ -84,11 +84,11 @@ describe.skipIf(!hasDatabase)('surviving a restart and failing cleanly', () => {
       // Everything the process knew is now gone. A fresh read of the row is all
       // a restarted worker has, and it has to be enough.
       const recovered = await recordedProviderJobId(asset.id);
-      expect(recovered).toBe(jobId);
+      expect(recovered?.providerJobId).toBe(jobId);
 
       // And it is enough: the id alone says which model to poll and how long the
       // clip is, so a brand-new provider instance can finish the job.
-      const decoded = decodeJobId(recovered!);
+      const decoded = decodeJobId(recovered!.providerJobId);
       expect(decoded.requestId).toBe('req-restart');
       expect(decoded.model).toBe('fal-ai/kling-video/v3/pro/image-to-video');
       expect(decoded.durationSeconds).toBe(10);
@@ -118,7 +118,13 @@ describe.skipIf(!hasDatabase)('surviving a restart and failing cleanly', () => {
       });
 
       expect(second.id).toBe(first.id);
-      expect(await recordedProviderJobId(second.id)).toBe('model#5#req-1');
+
+      const adopted = await recordedProviderJobId(second.id);
+      expect(adopted?.providerJobId).toBe('model#5#req-1');
+      // The meta comes back with it: a resumed job that adopted a submission
+      // but forgot what that submission carried would overwrite the record
+      // with silence when the clip finally lands.
+      expect(adopted?.meta).toBeDefined();
     });
 
     it('has nothing to adopt before a job has been accepted', async () => {

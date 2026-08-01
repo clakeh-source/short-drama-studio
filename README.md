@@ -1239,3 +1239,21 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
     worse than an untagged mention, and neither is visible until the clip
     exists. Run over 40 real storyboard prompts: 41 of 42 cast slots tagged by
     name, one introduced by the fallback clause.
+
+78. **`castCapacity` is read off the model, not asserted by the adapter.** The
+    Kling generations differ in ways that fail silently: v1.6, v2.1 and v2.5
+    take the start frame as `image_url` and have no `elements` field, while v3
+    and o1 take `start_image_url` and do. Pinning an older model through
+    `FAL_KLING_IMAGE_TO_VIDEO_MODEL` is legitimate and quietly removes
+    multi-character identity, so the capability comes from the configured id.
+    An unknown model is assumed newer rather than older — the opposite guess
+    degrades a capable model to a start frame it cannot read.
+
+79. **`generate` returns what only the adapter knows.** `elementsUsed` against
+    `castRequested`, plus any name the prompt never used, land on the asset row.
+    A gap between those two numbers is a shot where somebody was *described*
+    rather than *held*, which renders perfectly and drifts — the only failure
+    mode here that looks like success. The submit step also carries that meta
+    forward to the ready branch, because `updateAsset` replaces `meta` rather
+    than merging it, and a finished clip would otherwise be the one row that no
+    longer says what it was conditioned on.

@@ -156,6 +156,14 @@ interface Prediction {
 export class ReplicateVideoProvider implements VideoProvider {
   readonly id = 'replicate';
 
+  /**
+   * Zero: this adapter sends one reference image, under a field name the
+   * operator configures, to whatever model they picked. There is no way to
+   * describe a cast to it, so it conditions on the start frame alone and says
+   * so rather than letting a caller assume otherwise.
+   */
+  readonly castCapacity = 0;
+
   clampDuration(seconds: number): number {
     return clampToGrid(seconds, supportedDurations());
   }

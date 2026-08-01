@@ -20,6 +20,13 @@ export function clampDuration(seconds: number): number {
 export class StubVideoProvider implements VideoProvider {
   readonly id = 'stub';
 
+  /**
+   * Matches the fal adapter's ceiling, so a stub run exercises the same cast
+   * arithmetic as a real one. Nothing here reads the faces — but a stub that
+   * declared zero would make every local run look like a drifting one.
+   */
+  readonly castCapacity = 4;
+
   clampDuration(seconds: number): number {
     return clampDuration(seconds);
   }

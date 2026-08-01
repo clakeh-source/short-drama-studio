@@ -206,8 +206,27 @@ export interface VideoProvider {
    * real grid rather than discovering it at generation time.
    */
   clampDuration(seconds: number): number;
+  /**
+   * How many characters this provider can hold by their own face in one clip.
+   *
+   * Declared rather than inferred, for the same reason `ImageProvider` declares
+   * `identityCapacity`: a cast sent to a model that cannot read it produces
+   * exactly the drift the references exist to remove, and the result is
+   * indistinguishable from one that worked until the faces change. Zero means
+   * the adapter conditions on the start frame alone.
+   */
+  readonly castCapacity: number;
   estimateCostCents(input: VideoGenInput): number;
-  generate(input: VideoGenInput): Promise<{ providerJobId: string }>;
+  /**
+   * `meta` is whatever the adapter knows about the request it just made and the
+   * caller cannot work out for itself — how much of the cast the model will
+   * actually hold, which names it had to introduce. Recorded on the asset, so
+   * "what was this clip conditioned on" stays answerable months later.
+   */
+  generate(input: VideoGenInput): Promise<{
+    providerJobId: string;
+    meta?: Record<string, unknown>;
+  }>;
   poll(providerJobId: string): Promise<ProviderResult>;
 }
 

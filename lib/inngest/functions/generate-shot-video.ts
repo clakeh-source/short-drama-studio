@@ -318,9 +318,9 @@ export const generateShotVideo = inngest.createFunction(
         log.info('adopting a job submitted before the interruption', {
           ...context,
           operation: 'video.submit.resumed',
-          providerJobId: existing,
+          providerJobId: existing.providerJobId,
         });
-        return { providerJobId: existing };
+        return { providerJobId: existing.providerJobId, providerMeta: existing.meta };
       }
 
       /**
@@ -334,8 +334,9 @@ export const generateShotVideo = inngest.createFunction(
       const mode = plan.referenceImageUrls.length > 0 ? 'image-to-video' : 'text-to-video';
 
       let providerJobId: string;
+      let providerMeta: Record<string, unknown> | undefined;
       try {
-        ({ providerJobId } = await provider.generate({
+        ({ providerJobId, meta: providerMeta } = await provider.generate({
           prompt: plan.prompt,
           ...(plan.negativePrompt ? { negativePrompt: plan.negativePrompt } : {}),
           durationSeconds: plan.durationSeconds,
@@ -384,6 +385,12 @@ export const generateShotVideo = inngest.createFunction(
            * conditions on one face and the other character comes from the
            * prompt, and that is worth being able to read off the row.
            */
+          /**
+           * The keyframe's own numbers describe the *frame*: how many of the
+           * shot's characters the start image managed to show. They are no
+           * longer the answer to "did the two-hander hold" — the clip's
+           * identities come from the cast below.
+           */
           keyframe: plan.keyframe
             ? {
                 storagePath: plan.keyframe.storagePath,
@@ -392,9 +399,36 @@ export const generateShotVideo = inngest.createFunction(
                 costCents: plan.keyframe.costCents,
               }
             : null,
+          /**
+           * What the *clip* was conditioned on, from the adapter that sent it:
+           * `elementsUsed` against `castRequested`, and any name the prompt
+           * never used. A gap between the two is a shot where somebody was
+           * described rather than held, which is the failure this whole path
+           * exists to remove and is otherwise invisible until the faces change.
+           */
+          ...(providerMeta ?? {}),
         },
       });
       await setShotStatus(shotId, 'generating');
+
+      /**
+       * A cast the model cannot hold is worth a warning, not a failure.
+       *
+       * The clip still renders and still looks plausible; the faces drift.
+       * Usually a pre-v3 model pinned in the environment, which reads as a
+       * working pipeline right up until someone watches two shots in a row.
+       */
+      const elementsUsed = Number(providerMeta?.elementsUsed ?? 0);
+      if (plan.castReferences.length > 0 && elementsUsed < plan.castReferences.length) {
+        log.warn('some of this shot’s cast is described rather than held', {
+          ...context,
+          operation: 'video.cast.partial',
+          castRequested: plan.castReferences.length,
+          elementsUsed,
+          castCapacity: provider.castCapacity,
+          ...(providerMeta?.castIntroduced ? { castIntroduced: providerMeta.castIntroduced } : {}),
+        });
+      }
 
       log.info('video job submitted', {
         ...context,
@@ -406,7 +440,10 @@ export const generateShotVideo = inngest.createFunction(
         referenceCharacters: plan.referenceCharacters.map((c) => c.name),
       });
 
-      return { providerJobId };
+      // `providerMeta` travels out of the step, not just into the row: the poll
+      // below rewrites `meta` wholesale on success, and this is the only place
+      // that knows what the request actually carried.
+      return { providerJobId, providerMeta: providerMeta ?? {} };
     });
 
     /* -- 4. Poll ------------------------------------------------------------ */
@@ -464,6 +501,10 @@ export const generateShotVideo = inngest.createFunction(
                   facesRequested: plan.keyframe.facesRequested,
                 }
               : null,
+            // Carried across from the submit step: `meta` is replaced, not
+            // merged, so a finished clip would otherwise be the one row that
+            // no longer records what it was conditioned on.
+            ...submitted.providerMeta,
             bytes: stored.bytes,
             ...(result.meta ?? {}),
           },

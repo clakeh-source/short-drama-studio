@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { composeElements, MAX_ANGLES_PER_ELEMENT, MAX_ELEMENTS } from '@/lib/providers/fal/elements';
+import {
+  capabilitiesFor,
+  composeElements,
+  MAX_ANGLES_PER_ELEMENT,
+  MAX_ELEMENTS,
+} from '@/lib/providers/fal/elements';
 import type { VideoCastReference } from '@/lib/providers';
 
 /**
@@ -176,5 +181,44 @@ describe('no cast', () => {
       referenced: [],
       introduced: [],
     });
+  });
+});
+
+describe('what the configured model can actually do', () => {
+  it('knows the generations that read elements', () => {
+    // Verified against fal's OpenAPI schema per endpoint. v3 and o1 declare
+    // `elements`; nothing before them does.
+    expect(capabilitiesFor('fal-ai/kling-video/v3/pro/image-to-video').elements).toBe(true);
+    expect(capabilitiesFor('fal-ai/kling-video/o1/reference-to-video').elements).toBe(true);
+    expect(capabilitiesFor('fal-ai/kling-video/v2.5-turbo/pro/image-to-video').elements).toBe(false);
+    expect(capabilitiesFor('fal-ai/kling-video/v2.1/pro/image-to-video').elements).toBe(false);
+    expect(capabilitiesFor('fal-ai/kling-video/v1.6/pro/image-to-video').elements).toBe(false);
+  });
+
+  it('knows which field the start frame goes in', () => {
+    // The split that made the original bug plausible: `image_url` is correct
+    // for pre-v3 and wrong for v3, and the model id is configurable.
+    expect(capabilitiesFor('fal-ai/kling-video/v3/pro/image-to-video').startImageField).toBe(
+      'start_image_url',
+    );
+    expect(capabilitiesFor('fal-ai/kling-video/v2.1/pro/image-to-video').startImageField).toBe(
+      'image_url',
+    );
+  });
+
+  it('assumes an unknown model is newer, not older', () => {
+    // The alternative silently degrades a capable model to a start frame it
+    // cannot read, which is the harder failure to notice of the two.
+    expect(capabilitiesFor('fal-ai/kling-video/v4/pro/image-to-video')).toEqual({
+      startImageField: 'start_image_url',
+      elements: true,
+    });
+  });
+
+  it('does not read a version out of the middle of a name', () => {
+    // Anchored on path segments: `v10` must not match as `v1`, and a customer
+    // model called `studio-v2-final` is not a Kling generation.
+    expect(capabilitiesFor('fal-ai/kling-video/v10/pro/image-to-video').elements).toBe(true);
+    expect(capabilitiesFor('acme/studio-v2-final').elements).toBe(true);
   });
 });

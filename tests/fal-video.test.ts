@@ -180,6 +180,69 @@ describe('elements — several faces in one clip', () => {
   });
 });
 
+describe('what the pinned model can do', () => {
+  const cast = [{ name: 'Mei Lin', urls: ['https://storage.test/mei/0.png'] }];
+  const withKeyframe = {
+    ...base,
+    prompt: 'Mei Lin waits at the barrier.',
+    referenceImageUrls: ['https://storage.test/keyframe.png'],
+    castReferences: cast,
+  };
+
+  it('declares the capacity of the model actually configured', () => {
+    process.env.FAL_KLING_IMAGE_TO_VIDEO_MODEL = 'fal-ai/kling-video/v3/pro/image-to-video';
+    expect(new FalVideoProvider().castCapacity).toBe(4);
+
+    // Pinning an older Kling is legitimate and silently removes the capability,
+    // so the number has to come from the model in use rather than the adapter.
+    process.env.FAL_KLING_IMAGE_TO_VIDEO_MODEL = 'fal-ai/kling-video/v2.1/pro/image-to-video';
+    expect(new FalVideoProvider().castCapacity).toBe(0);
+  });
+
+  it('sends a pre-v3 model the shape it understands', () => {
+    process.env.FAL_KLING_IMAGE_TO_VIDEO_MODEL = 'fal-ai/kling-video/v2.1/pro/image-to-video';
+    const { body, elementsUsed } = new FalVideoProvider().buildRequest(withKeyframe);
+
+    // v2.1 takes `image_url` and has no `elements`. Sending the v3 shape drops
+    // the start frame — the clip renders, and the faces drift.
+    expect(body.image_url).toBe('https://storage.test/keyframe.png');
+    expect(body).not.toHaveProperty('start_image_url');
+    expect(body).not.toHaveProperty('elements');
+    expect(elementsUsed).toBe(0);
+    // And the prompt is left as prose, because there is nothing to point at.
+    expect(body.prompt).toBe('Mei Lin waits at the barrier.');
+  });
+
+  it('reports the cast it held, so a drifting clip is not a mystery', async () => {
+    process.env.FAL_KLING_IMAGE_TO_VIDEO_MODEL = 'fal-ai/kling-video/v3/pro/image-to-video';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ request_id: 'req-1' }), { status: 200 }),
+    );
+
+    const { meta } = await new FalVideoProvider().generate({
+      ...withKeyframe,
+      castReferences: [...cast, { name: 'Old Wen', urls: ['https://storage.test/wen.png'] }],
+    });
+
+    // The honest pair: how many faces the clip holds, against how many it was
+    // asked to. Recorded on the asset, because a gap between them is invisible
+    // until the faces change thirty clips later.
+    expect(meta).toMatchObject({ elementsUsed: 2, castRequested: 2, castIntroduced: ['Old Wen'] });
+  });
+
+  it('reports zero held when the pinned model cannot read a cast', async () => {
+    process.env.FAL_KLING_IMAGE_TO_VIDEO_MODEL = 'fal-ai/kling-video/v2.1/pro/image-to-video';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ request_id: 'req-2' }), { status: 200 }),
+    );
+
+    const { meta } = await new FalVideoProvider().generate(withKeyframe);
+
+    // Not an error — the clip is fine, the faces are not. The row says which.
+    expect(meta).toMatchObject({ elementsUsed: 0, castRequested: 1 });
+  });
+});
+
 describe('the request body', () => {
   it('sends the duration as a string on Kling’s grid', () => {
     const { body } = new FalVideoProvider().buildRequest({ ...base, durationSeconds: 7 });

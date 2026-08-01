@@ -232,12 +232,23 @@ async function settleEpisodeAfterGeneration(sceneId: string | null): Promise<voi
  * episode), a `submit` that threw after the provider had accepted the job would
  * otherwise be re-run and charged again.
  */
-export async function recordedProviderJobId(assetId: string): Promise<string | null> {
+export async function recordedProviderJobId(
+  assetId: string,
+): Promise<{ providerJobId: string; meta: Record<string, unknown> } | null> {
   const [row] = await db()
-    .select({ providerJobId: assets.providerJobId })
+    .select({ providerJobId: assets.providerJobId, meta: assets.meta })
     .from(assets)
     .where(eq(assets.id, assetId));
-  return row?.providerJobId ?? null;
+
+  if (!row?.providerJobId) return null;
+
+  // The meta comes back with the id because it was written in the same step:
+  // a resumed job that adopted a submission but forgot what that submission
+  // carried would overwrite the record with silence when the clip lands.
+  return {
+    providerJobId: row.providerJobId,
+    meta: (row.meta as Record<string, unknown> | null) ?? {},
+  };
 }
 
 /* -------------------------------------------------------------------------- */

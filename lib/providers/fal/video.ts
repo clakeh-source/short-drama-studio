@@ -1,6 +1,6 @@
 import { configurationError, isRetryableStatus, ProviderRequestError } from '../types';
 import type { ProviderResult, VideoGenInput, VideoProvider } from '../types';
-import { composeElements } from './elements';
+import { capabilitiesFor, composeElements, MAX_ELEMENTS } from './elements';
 
 /**
  * Kling video via fal.ai.
@@ -165,6 +165,14 @@ interface KlingResult {
 export class FalVideoProvider implements VideoProvider {
   readonly id = 'fal';
 
+  /**
+   * Read off the configured image-to-video model, not assumed.
+   *
+   * Pinning a pre-v3 Kling is a legitimate thing to do and it silently removes
+   * this capability, so the number has to come from the model actually in use.
+   */
+  readonly castCapacity = capabilitiesFor(imageToVideoModel()).elements ? MAX_ELEMENTS : 0;
+
   clampDuration(seconds: number): number {
     return SUPPORTED_DURATIONS.reduce((best, candidate) =>
       Math.abs(candidate - seconds) <= Math.abs(best - seconds) ? candidate : best,
@@ -205,8 +213,11 @@ export class FalVideoProvider implements VideoProvider {
      * The start frame stays — it sets the location and the framing, which
      * elements say nothing about. The two answer different questions.
      */
+    const capabilities = capabilitiesFor(model);
     const cast =
-      mode === 'image-to-video' ? composeElements(input.prompt, input.castReferences ?? []) : null;
+      mode === 'image-to-video' && capabilities.elements
+        ? composeElements(input.prompt, input.castReferences ?? [])
+        : null;
 
     const body: Record<string, unknown> = {
       ...extraInput(),
@@ -226,7 +237,9 @@ export class FalVideoProvider implements VideoProvider {
        * image-to-video call this adapter has ever made was malformed. It has
        * never been caught because it has never been run against live fal, and
        * from the outside a rejected submission looks like any other provider
-       * refusal.
+       * refusal. `image_url` is not wrong everywhere, which is what made it
+       * plausible: it is what v1.6, v2.1 and v2.5 take, and the model id is
+       * configurable, so the field name follows the model.
        *
        * Only one image goes. The endpoint takes the rest of a character's
        * canonical set through `elements[]`, not through a top-level field —
@@ -235,7 +248,7 @@ export class FalVideoProvider implements VideoProvider {
        * (`referenceImageCount`, `referenceCharacters`), so nothing is lost by
        * not sending a field the model never reads.
        */
-      ...(mode === 'image-to-video' ? { start_image_url: stills[0] } : {}),
+      ...(mode === 'image-to-video' ? { [capabilities.startImageField]: stills[0] } : {}),
       ...(cast && cast.elements.length > 0 ? { elements: cast.elements } : {}),
     };
 
@@ -249,8 +262,10 @@ export class FalVideoProvider implements VideoProvider {
     };
   }
 
-  async generate(input: VideoGenInput): Promise<{ providerJobId: string }> {
-    const { url, model, body } = this.buildRequest(input);
+  async generate(
+    input: VideoGenInput,
+  ): Promise<{ providerJobId: string; meta?: Record<string, unknown> }> {
+    const { url, model, body, elementsUsed, introduced } = this.buildRequest(input);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -281,6 +296,24 @@ export class FalVideoProvider implements VideoProvider {
         this.clampDuration(input.durationSeconds),
         payload.request_id,
       ),
+      meta: {
+        /**
+         * The honest number for "did the two-hander hold".
+         *
+         * How many characters this clip is conditioned on by their own face,
+         * as opposed to described in the prompt and drawn from scratch. Zero
+         * against a non-empty cast means a pre-v3 model that cannot read
+         * `elements` — the clip will still render, and the faces will drift.
+         */
+        elementsUsed,
+        castRequested: input.castReferences?.length ?? 0,
+        /**
+         * Cast whose names the prompt never used, so a clause had to introduce
+         * them. Usually a storyboard that drifted from the bible; always worth
+         * being able to find after the fact.
+         */
+        ...(introduced.length > 0 ? { castIntroduced: introduced } : {}),
+      },
     };
   }
 
