@@ -1,5 +1,6 @@
 import { configurationError, isRetryableStatus, ProviderRequestError } from '../types';
 import type { ProviderResult, VideoGenInput, VideoProvider } from '../types';
+import { composeElements } from './elements';
 
 /**
  * Kling video via fal.ai.
@@ -186,15 +187,32 @@ export class FalVideoProvider implements VideoProvider {
     url: string;
     model: string;
     mode: 'image-to-video' | 'text-to-video';
+    /** How many characters the clip is conditioned on by face, not by description. */
+    elementsUsed: number;
+    /** Cast whose names the prompt never used, so they had to be introduced. */
+    introduced: string[];
     body: Record<string, unknown>;
   } {
     const stills = input.referenceImageUrls?.filter((url) => url.trim().length > 0) ?? [];
     const mode = stills.length > 0 ? 'image-to-video' : 'text-to-video';
     const model = mode === 'image-to-video' ? imageToVideoModel() : textToVideoModel();
 
+    /**
+     * Each character in the shot, held by their own stills.
+     *
+     * Only on the image-to-video endpoint: `elements` is not a field on
+     * text-to-video, and a shot with no stills has no cast to hold anyway.
+     * The start frame stays — it sets the location and the framing, which
+     * elements say nothing about. The two answer different questions.
+     */
+    const cast =
+      mode === 'image-to-video' ? composeElements(input.prompt, input.castReferences ?? []) : null;
+
     const body: Record<string, unknown> = {
       ...extraInput(),
-      prompt: input.prompt,
+      // Rewritten to point at the elements by position when there are any:
+      // Kling reads `@Element1`, not "Mei".
+      prompt: cast && cast.elements.length > 0 ? cast.prompt : input.prompt,
       // Kling takes the duration as a string enum, not a number.
       duration: String(this.clampDuration(input.durationSeconds)),
       aspect_ratio: input.aspectRatio,
@@ -218,9 +236,17 @@ export class FalVideoProvider implements VideoProvider {
        * not sending a field the model never reads.
        */
       ...(mode === 'image-to-video' ? { start_image_url: stills[0] } : {}),
+      ...(cast && cast.elements.length > 0 ? { elements: cast.elements } : {}),
     };
 
-    return { url: `${QUEUE_BASE}/${model}`, model, mode, body };
+    return {
+      url: `${QUEUE_BASE}/${model}`,
+      model,
+      mode,
+      elementsUsed: cast?.elements.length ?? 0,
+      introduced: cast?.introduced ?? [],
+      body,
+    };
   }
 
   async generate(input: VideoGenInput): Promise<{ providerJobId: string }> {

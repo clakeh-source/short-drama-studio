@@ -175,6 +175,27 @@ export interface VideoGenInput {
    * is text-to-video. Adapters must not invent a reference from the prompt.
    */
   referenceImageUrls?: string[];
+  /**
+   * The same stills, grouped by which person is in them.
+   *
+   * `referenceImageUrls` is the flat form, and flat is lossy: three angles of
+   * one person and one angle each of three people are the same list. A model
+   * that can hold several identities at once needs to be told which face is
+   * which, and this is that shape. Ordered by billing, like the flat list.
+   *
+   * Optional and additive — an adapter whose model conditions on a single image
+   * ignores it and reads `referenceImageUrls`, which stays the field that
+   * decides image-to-video versus text-to-video.
+   */
+  castReferences?: VideoCastReference[];
+}
+
+/** One character and the stills that establish their face. */
+export interface VideoCastReference {
+  /** As written in the script, so it can be found in the prompt. */
+  name: string;
+  /** Canonical stills, best view first. */
+  urls: string[];
 }
 
 export interface VideoProvider {

@@ -218,6 +218,17 @@ export const generateShotVideo = inngest.createFunction(
         referenceImageUrls: keyframe ? [keyframe.url] : references.urls,
         keyframe,
         referenceCharacters: references.characters,
+        /**
+         * The cast, grouped, for a model that can hold more than one identity.
+         *
+         * Sent alongside the keyframe rather than instead of it: the keyframe
+         * establishes the location and the framing, and the elements establish
+         * who is in it. Adapters whose model reads neither ignore this.
+         */
+        castReferences: references.characters.map((character) => ({
+          name: character.name,
+          urls: character.urls,
+        })),
         estimateCents: provider.estimateCostCents({
           prompt,
           durationSeconds: shot.durationSeconds,
@@ -332,6 +343,7 @@ export const generateShotVideo = inngest.createFunction(
           ...(plan.referenceImageUrls.length > 0
             ? { referenceImageUrls: plan.referenceImageUrls }
             : {}),
+          ...(plan.castReferences.length > 0 ? { castReferences: plan.castReferences } : {}),
         }));
       } catch (error) {
         /**

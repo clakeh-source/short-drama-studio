@@ -13,6 +13,7 @@ export type {
   RenderInput,
   RenderProvider,
   TtsProvider,
+  VideoCastReference,
   VideoGenInput,
   VideoProvider,
 } from './types';

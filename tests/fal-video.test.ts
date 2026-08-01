@@ -100,6 +100,86 @@ describe('choosing the model', () => {
   });
 });
 
+describe('elements — several faces in one clip', () => {
+  const cast = [
+    { name: 'Mei Lin', urls: ['https://storage.test/mei/0.png', 'https://storage.test/mei/1.png'] },
+    { name: 'Daniel Voss', urls: ['https://storage.test/dan/0.png'] },
+  ];
+
+  it('sends the cast grouped, alongside the start frame', () => {
+    const { body, elementsUsed } = new FalVideoProvider().buildRequest({
+      ...base,
+      prompt: 'Mei Lin and Daniel Voss face each other across the barrier.',
+      referenceImageUrls: ['https://storage.test/keyframe.png'],
+      castReferences: cast,
+    });
+
+    // The two answer different questions and both are sent: the start frame
+    // says where this is and how it is framed, the elements say who is in it.
+    expect(body.start_image_url).toBe('https://storage.test/keyframe.png');
+    expect(elementsUsed).toBe(2);
+    expect(body.elements).toEqual([
+      {
+        frontal_image_url: 'https://storage.test/mei/0.png',
+        reference_image_urls: ['https://storage.test/mei/1.png'],
+      },
+      { frontal_image_url: 'https://storage.test/dan/0.png' },
+    ]);
+  });
+
+  it('rewrites the prompt to point at them', () => {
+    const { body } = new FalVideoProvider().buildRequest({
+      ...base,
+      prompt: 'Mei Lin and Daniel Voss face each other across the barrier.',
+      referenceImageUrls: ['https://storage.test/keyframe.png'],
+      castReferences: cast,
+    });
+
+    // Kling matches elements to the prompt by position, not by name. An
+    // unrewritten prompt sends the faces and never refers to them.
+    expect(body.prompt).toBe('@Element1 and @Element2 face each other across the barrier.');
+  });
+
+  it('leaves the prompt alone when there is no cast', () => {
+    const { body, elementsUsed } = new FalVideoProvider().buildRequest({
+      ...base,
+      referenceImageUrls: ['https://storage.test/keyframe.png'],
+    });
+
+    expect(body.prompt).toBe(base.prompt);
+    expect(body).not.toHaveProperty('elements');
+    expect(elementsUsed).toBe(0);
+  });
+
+  it('sends no elements on a text-to-video call', () => {
+    // `elements` is not a field on the text-to-video endpoint, and a shot with
+    // no stills has no cast to hold in the first place.
+    const { body, mode, elementsUsed } = new FalVideoProvider().buildRequest({
+      ...base,
+      castReferences: cast,
+    });
+
+    expect(mode).toBe('text-to-video');
+    expect(body).not.toHaveProperty('elements');
+    expect(body.prompt).toBe(base.prompt);
+    expect(elementsUsed).toBe(0);
+  });
+
+  it('reports the cast it had to introduce', () => {
+    const { introduced, body } = new FalVideoProvider().buildRequest({
+      ...base,
+      prompt: 'The ferryman waves the last passenger aboard.',
+      referenceImageUrls: ['https://storage.test/keyframe.png'],
+      castReferences: [{ name: 'Old Wen', urls: ['https://storage.test/wen.png'] }],
+    });
+
+    // Worth surfacing: a shot whose prompt never names its own cast is usually
+    // a storyboard that drifted from the bible, and it degrades quietly.
+    expect(introduced).toEqual(['Old Wen']);
+    expect(body.prompt).toContain('@Element1 is Old Wen.');
+  });
+});
+
 describe('the request body', () => {
   it('sends the duration as a string on Kling’s grid', () => {
     const { body } = new FalVideoProvider().buildRequest({ ...base, durationSeconds: 7 });
