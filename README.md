@@ -1185,7 +1185,16 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
     so rather than implying otherwise. Raising `FAL_IMAGE_IDENTITY_CAPACITY`
     against a multi-identity model is the only change needed to lock both.
 
-72. **The keyframe is booked as an asset.** It is stored and it costs money, and
+72. **The capacity setting is clamped to what the model is known to read.** It
+    describes the configured model; it does not grant it a capability. Setting 4
+    against PuLID does not produce four conditioned faces — it produces one face
+    and a wrong number in the asset row, which is the exact failure the number
+    exists to expose, reintroduced through its own setting. Known
+    single-identity models are matched by pattern and clamped with a warning;
+    unrecognised models are trusted, because refusing them would make every new
+    model unusable until the list caught up.
+
+73. **The keyframe is booked as an asset.** It is stored and it costs money, and
     the spend ledger reconciles against `assets.cost_cents` — so it gets an
     `image` row and its own `usage_log` entry. Recording the charge without a
     row would break that invariant; recording neither would understate a film by
@@ -1193,7 +1202,7 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
     $17.22 to **$19.26**, and the cast line rose because the set is now drawn at
     the identity rate.
 
-73. **`/api/health` reports the queue, and says when it did not probe it.** The
+74. **`/api/health` reports the queue, and says when it did not probe it.** The
     brief asks for Redis connection status. Locally the equivalent is the Inngest
     dev server, which has a `/health` endpoint worth pinging. In production the
     queue is Inngest Cloud, which exposes no unauthenticated probe — so that

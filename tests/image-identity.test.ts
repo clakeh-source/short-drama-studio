@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   FalImageProvider,
+  identityCapacity,
   identityModel,
   imageModel,
+  knownCapacityFor,
   modelFor,
 } from '@/lib/providers/fal/image';
 import { StubImageProvider } from '@/lib/providers/stub/image';
@@ -34,6 +36,7 @@ beforeEach(() => {
   delete process.env.FAL_IMAGE_IDENTITY_MODEL;
   delete process.env.FAL_IMAGE_COST_CENTS;
   delete process.env.FAL_IMAGE_IDENTITY_COST_CENTS;
+  delete process.env.FAL_IMAGE_IDENTITY_CAPACITY;
 });
 
 afterEach(() => {
@@ -127,6 +130,81 @@ describe('capability', () => {
     // reference into a model that ignores it.
     expect(new FalImageProvider().supportsIdentity).toBe(true);
     expect(new StubImageProvider().supportsIdentity).toBe(true);
+  });
+});
+
+describe('identity capacity', () => {
+  it('defaults to one face', () => {
+    delete process.env.FAL_IMAGE_IDENTITY_CAPACITY;
+    expect(identityCapacity()).toBe(1);
+  });
+
+  it('knows the single-identity models', () => {
+    // These encode one face by construction. Anything claiming otherwise about
+    // them is a configuration error, not a capability.
+    expect(knownCapacityFor('fal-ai/flux-pulid')).toBe(1);
+    expect(knownCapacityFor('fal-ai/instant-id')).toBe(1);
+    expect(knownCapacityFor('fal-ai/ip-adapter-face-id')).toBe(1);
+  });
+
+  it('clamps a capacity the configured model cannot honour', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/flux-pulid';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    // Asking for four faces from a one-face model does not give you four faces.
+    // It gives you one face and a wrong number in the asset row, which is worse
+    // than not asking — so the setting is clamped rather than believed.
+    expect(identityCapacity()).toBe(1);
+  });
+
+  it('honours the capacity for a model it does not recognise', () => {
+    // Refusing unknown models would make every new one unusable until this list
+    // learned about it. Trust, having warned about the ones we do know.
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'someone/multi-identity-v2';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    expect(knownCapacityFor('someone/multi-identity-v2')).toBeNull();
+    expect(identityCapacity()).toBe(4);
+  });
+
+  it('only sends as many faces as will be read', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/flux-pulid';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    const faces = ['a.png', 'b.png', 'c.png', 'd.png'];
+    const { body, facesUsed } = new FalImageProvider().buildRequest({
+      ...base,
+      identityImageUrls: faces,
+    });
+
+    expect(facesUsed).toBe(1);
+    expect(body.reference_image_url).toBe('a.png');
+    // No multi-face field, because this model would ignore it and its presence
+    // would suggest otherwise to anyone reading the request.
+    expect(body).not.toHaveProperty('reference_image_urls');
+  });
+
+  it('sends the whole set to a model that reads it', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'someone/multi-identity-v2';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    const faces = ['a.png', 'b.png', 'c.png', 'd.png'];
+    const { body, facesUsed } = new FalImageProvider().buildRequest({
+      ...base,
+      identityImageUrls: faces,
+    });
+
+    // Four characters in one keyframe: the two-hander actually locked.
+    expect(facesUsed).toBe(4);
+    expect(body.reference_image_urls).toEqual(faces);
+    // Ordered, so a single-identity fallback still gets the lead.
+    expect(body.reference_image_url).toBe('a.png');
+  });
+
+  it('never exceeds four, whatever is configured', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'someone/multi-identity-v2';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '99';
+    expect(identityCapacity()).toBe(4);
   });
 });
 

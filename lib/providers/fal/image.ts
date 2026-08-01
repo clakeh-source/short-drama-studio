@@ -69,21 +69,54 @@ export function identityModel(): string {
 }
 
 /**
+ * Models whose face capacity is known, so the setting cannot lie about them.
+ *
+ * These three are single-identity by construction: they encode one face and
+ * condition on it. Configuring a capacity above what a model reads would make
+ * `facesUsed` claim a two-hander was locked when the second character was still
+ * drawn from the prompt — the precise failure the capacity number exists to
+ * expose, reintroduced through its own setting.
+ *
+ * Matched loosely because fal slugs carry versions and variants.
+ */
+const KNOWN_CAPACITY: Array<{ pattern: RegExp; capacity: number }> = [
+  { pattern: /pulid/i, capacity: 1 },
+  { pattern: /instant-?id/i, capacity: 1 },
+  { pattern: /ip-?adapter/i, capacity: 1 },
+];
+
+/** What the configured model is known to read, or null if it is not known. */
+export function knownCapacityFor(model: string): number | null {
+  return KNOWN_CAPACITY.find((entry) => entry.pattern.test(model))?.capacity ?? null;
+}
+
+/**
  * How many faces the configured identity model actually reads.
  *
- * PuLID and InstantID take one. Multi-identity models exist and take several,
- * and the whole point of `identityImageUrls` being ordered is that raising this
- * is the only change needed to use one.
+ * The ordering of `identityImageUrls` exists so that raising this is the only
+ * change needed to adopt a multi-identity model. But it is a *description* of
+ * the model, not a request to it — so a value above what the model is known to
+ * read is clamped, and said out loud. Setting 4 against PuLID does not give you
+ * four faces; it gives you one face and a wrong number in the asset row.
  *
- * Deliberately conservative: sending a second face to a model that reads one is
- * harmless, but *claiming* both were used when only the first was is exactly
- * the silent-drift failure this file keeps guarding against. The caller is told
- * how many were used so it can say so.
+ * Unknown models are trusted, because refusing them would make every new model
+ * unusable until this list learned about it.
  */
 export function identityCapacity(): number {
   const raw = Number(process.env.FAL_IMAGE_IDENTITY_CAPACITY);
-  if (!Number.isFinite(raw) || raw < 1) return 1;
-  return Math.min(Math.floor(raw), 4);
+  const requested = Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), 4) : 1;
+
+  const known = knownCapacityFor(identityModel());
+  if (known !== null && requested > known) {
+    console.warn(
+      `[fal] FAL_IMAGE_IDENTITY_CAPACITY=${requested} but ${identityModel()} reads ${known} ` +
+        `face. Using ${known}. Point FAL_IMAGE_IDENTITY_MODEL at a multi-identity model to ` +
+        `condition on more than one character per shot.`,
+    );
+    return known;
+  }
+
+  return requested;
 }
 
 /** Which model a request goes to, decided solely by whether faces were given. */
