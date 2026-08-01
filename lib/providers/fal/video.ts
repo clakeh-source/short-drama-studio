@@ -201,15 +201,23 @@ export class FalVideoProvider implements VideoProvider {
       ...(input.negativePrompt ? { negative_prompt: input.negativePrompt } : {}),
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
       /**
-       * Kling's image-to-video endpoint conditions on one still, so the first of
-       * the canonical set is the one that goes. The whole set travels in
-       * `reference_image_urls` for the model versions that read it, and is
-       * logged either way — dropping the rest silently would make it impossible
-       * to tell a one-still character from a three-still one after the fact.
+       * The start frame. `start_image_url` is the *only* required field on
+       * Kling's image-to-video endpoint, per fal's OpenAPI schema for it.
+       *
+       * This was `image_url`, which that endpoint does not define — so every
+       * image-to-video call this adapter has ever made was malformed. It has
+       * never been caught because it has never been run against live fal, and
+       * from the outside a rejected submission looks like any other provider
+       * refusal.
+       *
+       * Only one image goes. The endpoint takes the rest of a character's
+       * canonical set through `elements[]`, not through a top-level field —
+       * `reference_image_urls` was being sent there and silently ignored. What
+       * the shot conditioned on is recorded on the asset row either way
+       * (`referenceImageCount`, `referenceCharacters`), so nothing is lost by
+       * not sending a field the model never reads.
        */
-      ...(mode === 'image-to-video'
-        ? { image_url: stills[0], reference_image_urls: stills }
-        : {}),
+      ...(mode === 'image-to-video' ? { start_image_url: stills[0] } : {}),
     };
 
     return { url: `${QUEUE_BASE}/${model}`, model, mode, body };

@@ -50,10 +50,23 @@ describe('choosing the model', () => {
     expect(request.url).toBe(
       'https://queue.fal.run/fal-ai/kling-video/v3/pro/image-to-video',
     );
-    // The first canonical still is the one Kling conditions on; the whole set
-    // travels too, so a one-still character is distinguishable from a three-.
-    expect(request.body.image_url).toBe(stills[0]);
-    expect(request.body.reference_image_urls).toEqual(stills);
+    // `start_image_url` is the field name fal's schema for this endpoint gives,
+    // and the only required one. `image_url` — what this sent until it was
+    // checked against the schema — is not a field on it at all, so every call
+    // was malformed and nothing here could tell.
+    expect(request.body.start_image_url).toBe(stills[0]);
+    expect(request.body).not.toHaveProperty('image_url');
+  });
+
+  it('sends one start frame, not the whole set', () => {
+    // The endpoint conditions on a single image. The rest of a character's
+    // canonical set has a home — `elements[]` — and it is not a top-level
+    // field, so sending one made the request look richer than it was.
+    const stills = ['https://storage.test/mei/0.png', 'https://storage.test/mei/1.png'];
+    const { body } = new FalVideoProvider().buildRequest({ ...base, referenceImageUrls: stills });
+
+    expect(body.start_image_url).toBe(stills[0]);
+    expect(body).not.toHaveProperty('reference_image_urls');
   });
 
   it('falls back to text-to-video when there are no stills', () => {
@@ -61,10 +74,10 @@ describe('choosing the model', () => {
 
     expect(request.mode).toBe('text-to-video');
     expect(request.model).toBe('fal-ai/kling-video/v3/pro/text-to-video');
-    // Not "image_url: undefined" — the field must be absent, or a model that
-    // validates its inputs will refuse the request.
+    // Not "start_image_url: undefined" — the field must be absent, or a model
+    // that validates its inputs will refuse the request.
+    expect(request.body).not.toHaveProperty('start_image_url');
     expect(request.body).not.toHaveProperty('image_url');
-    expect(request.body).not.toHaveProperty('reference_image_urls');
   });
 
   it('treats an empty or blank set as no set at all', () => {
