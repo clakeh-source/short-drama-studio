@@ -44,7 +44,7 @@ describe('raising VIDEO_CONCURRENCY', () => {
     // twelve. The clips themselves are identical, so the money is not.
     expect(estimate.concurrency).toBe(8);
     expect(estimate.minutes).toBeLessThan(20);
-    expect(estimate.totalCents).toBe(1722);
+    expect(estimate.totalCents).toBe(1926);
     expect(estimate.shots.expected).toBe(36);
   });
 });

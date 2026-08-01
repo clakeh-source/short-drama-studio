@@ -1169,13 +1169,31 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
     They are mutually exclusive in practice — a model reads the one it knows —
     and guessing wrong drops the reference in silence.
 
-70. **What this does not fix: multi-character shots.** Kling conditions on one
-    image per clip, so only the first-billed character's still is sent. Their
-    face is stable across every shot they appear in; a second character in the
-    same shot is still coming from the prompt alone. Fixing that needs a model
-    that accepts several identities per generation.
+70. **Multi-character shots are fixed by drawing the shot, not the person.**
+    Kling conditions on one image per clip, so sending a character's portrait
+    meant a two-hander preserved only the first-billed face — *and* every clip
+    opened on a grey studio backdrop it had to travel out of in five seconds.
+    Both are the same mistake: conditioning on a picture of a person when what
+    is needed is a picture of the shot. Each shot now gets a **keyframe** drawn
+    from its own prompt with every character's stills as identity references,
+    and that becomes the start frame.
 
-71. **`/api/health` reports the queue, and says when it did not probe it.** The
+71. **`identityCapacity` is declared, and `facesUsed` is recorded.** "We sent
+    two references" and "the model conditioned on two" are different claims, and
+    only the second fixes a two-hander. PuLID and InstantID read one, so with
+    them the second character still comes from the prompt — the asset row says
+    so rather than implying otherwise. Raising `FAL_IMAGE_IDENTITY_CAPACITY`
+    against a multi-identity model is the only change needed to lock both.
+
+72. **The keyframe is booked as an asset.** It is stored and it costs money, and
+    the spend ledger reconciles against `assets.cost_cents` — so it gets an
+    `image` row and its own `usage_log` entry. Recording the charge without a
+    row would break that invariant; recording neither would understate a film by
+    one image per shot. It also moves the quote: a 3-minute film went from
+    $17.22 to **$19.26**, and the cast line rose because the set is now drawn at
+    the identity rate.
+
+73. **`/api/health` reports the queue, and says when it did not probe it.** The
     brief asks for Redis connection status. Locally the equivalent is the Inngest
     dev server, which has a `/health` endpoint worth pinging. In production the
     queue is Inngest Cloud, which exposes no unauthenticated probe — so that

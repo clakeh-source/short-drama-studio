@@ -53,7 +53,7 @@ describe('choosing the model', () => {
   });
 
   it('switches to the identity model when a face is supplied', () => {
-    const request = new FalImageProvider().buildRequest({ ...base, identityImageUrl: FACE });
+    const request = new FalImageProvider().buildRequest({ ...base, identityImageUrls: [FACE] });
 
     expect(request.identity).toBe(true);
     expect(request.model).toBe(identityModel());
@@ -63,7 +63,7 @@ describe('choosing the model', () => {
   it('sends the face under both field names the models use', () => {
     // PuLID calls it `reference_image_url`; InstantID and IP-Adapter FaceID call
     // it `image_url`. Getting the name wrong drops the reference in silence.
-    const { body } = new FalImageProvider().buildRequest({ ...base, identityImageUrl: FACE });
+    const { body } = new FalImageProvider().buildRequest({ ...base, identityImageUrls: [FACE] });
 
     expect(body.reference_image_url).toBe(FACE);
     expect(body.image_url).toBe(FACE);
@@ -75,21 +75,21 @@ describe('choosing the model', () => {
     const { body } = new FalImageProvider().buildRequest({
       ...base,
       prompt: 'three-quarter view, turned away',
-      identityImageUrl: FACE,
+      identityImageUrls: [FACE],
     });
 
     expect(body.prompt).toBe('three-quarter view, turned away');
   });
 
   it('treats a blank reference as no reference', () => {
-    expect(modelFor({ identityImageUrl: '   ' }).identity).toBe(false);
-    expect(modelFor({ identityImageUrl: undefined }).identity).toBe(false);
-    expect(modelFor({ identityImageUrl: FACE }).identity).toBe(true);
+    expect(modelFor({ identityImageUrls: ['   '] }).identity).toBe(false);
+    expect(modelFor({ identityImageUrls: undefined }).identity).toBe(false);
+    expect(modelFor({ identityImageUrls: [FACE] }).identity).toBe(true);
   });
 
   it('honours a configured identity model', () => {
     process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/instant-id';
-    const request = new FalImageProvider().buildRequest({ ...base, identityImageUrl: FACE });
+    const request = new FalImageProvider().buildRequest({ ...base, identityImageUrls: [FACE] });
     expect(request.model).toBe('fal-ai/instant-id');
   });
 });
@@ -99,7 +99,7 @@ describe('cost', () => {
     const provider = new FalImageProvider();
 
     const plain = provider.estimateCostCents({ ...base, count: 3 });
-    const identity = provider.estimateCostCents({ ...base, count: 3, identityImageUrl: FACE });
+    const identity = provider.estimateCostCents({ ...base, count: 3, identityImageUrls: [FACE] });
 
     // A face encoder on top of the base model is not free, and quoting the
     // cheaper number would under-report every cast the autorun draws.
@@ -109,14 +109,14 @@ describe('cost', () => {
   it('takes a configured identity rate', () => {
     process.env.FAL_IMAGE_IDENTITY_COST_CENTS = '9';
     expect(
-      new FalImageProvider().estimateCostCents({ ...base, count: 2, identityImageUrl: FACE }),
+      new FalImageProvider().estimateCostCents({ ...base, count: 2, identityImageUrls: [FACE] }),
     ).toBe(18);
   });
 
   it('refuses a nonsense rate rather than silently mispricing', () => {
     process.env.FAL_IMAGE_IDENTITY_COST_CENTS = 'free';
     expect(() =>
-      new FalImageProvider().estimateCostCents({ ...base, identityImageUrl: FACE }),
+      new FalImageProvider().estimateCostCents({ ...base, identityImageUrls: [FACE] }),
     ).toThrow(/FAL_IMAGE_IDENTITY_COST_CENTS/);
   });
 });
@@ -134,8 +134,8 @@ describe('the stub propagates identity', () => {
   it('gives images conditioned on the same face a shared channel', async () => {
     const provider = new StubImageProvider();
 
-    const a = await provider.generate({ ...base, prompt: 'front view', identityImageUrl: FACE });
-    const b = await provider.generate({ ...base, prompt: 'side view', identityImageUrl: FACE });
+    const a = await provider.generate({ ...base, prompt: 'front view', identityImageUrls: [FACE] });
+    const b = await provider.generate({ ...base, prompt: 'side view', identityImageUrls: [FACE] });
 
     // The stub derives one channel from the reference and the rest from the
     // prompt, so "same person, different pose" is observable without a real
@@ -148,10 +148,10 @@ describe('the stub propagates identity', () => {
   it('gives images of different faces different channels', async () => {
     const provider = new StubImageProvider();
 
-    const mei = await provider.generate({ ...base, identityImageUrl: FACE });
+    const mei = await provider.generate({ ...base, identityImageUrls: [FACE] });
     const daniel = await provider.generate({
       ...base,
-      identityImageUrl: 'https://storage.test/daniel/hero.png',
+      identityImageUrls: ['https://storage.test/daniel/hero.png'],
     });
 
     expect(channel(mei.images[0]!.url, 0)).not.toBe(channel(daniel.images[0]!.url, 0));

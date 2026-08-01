@@ -62,6 +62,12 @@ const serverEnvSchema = z.object({
   // everything else from the prompt, so a character's set is one person.
   FAL_IMAGE_IDENTITY_MODEL: z.string().min(1).default('fal-ai/flux-pulid'),
   FAL_IMAGE_IDENTITY_COST_CENTS: z.coerce.number().nonnegative().optional(),
+  // How many faces the identity model reads. 1 for PuLID/InstantID; raise it
+  // for a multi-identity model and two-handers condition on both people.
+  FAL_IMAGE_IDENTITY_CAPACITY: z.coerce.number().int().min(1).max(4).optional(),
+  // `off` disables per-shot keyframes and falls back to conditioning on the
+  // character stills, which is cheaper and worse.
+  SHOT_KEYFRAMES: z.enum(['on', 'off']).optional(),
   FAL_KLING_EXTRA_INPUT: z.string().optional(),
 
   ELEVENLABS_API_KEY: z.string().optional(),

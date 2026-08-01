@@ -1,5 +1,6 @@
 import { CANONICAL_REFERENCE_SET_SIZE } from '@/lib/characters/references';
 import { MAX_INFLIGHT_VIDEO_JOBS } from '@/lib/data/generation';
+import { keyframesEnabled } from '@/lib/characters/keyframe';
 import { shotCountRange } from '@/lib/shots';
 import type { ImageProvider, TtsProvider, VideoProvider } from '@/lib/providers';
 
@@ -55,6 +56,8 @@ export interface RunEstimate {
   breakdown: {
     script: number;
     cast: number;
+    /** Start frames, one per shot. */
+    keyframes: number;
     video: number;
     voice: number;
     assembly: number;
@@ -101,7 +104,25 @@ export function estimateRun(input: {
     prompt: '',
     count: characters * CANONICAL_REFERENCE_SET_SIZE,
     aspectRatio: '9:16',
+    // The set is identity-locked, which is the dearer rate.
+    identityImageUrls: input.image.supportsIdentity ? ['reference'] : [],
   });
+
+  /**
+   * One keyframe per shot, drawn before the clip.
+   *
+   * Small against the video — a few percent — but real, and leaving it out
+   * would understate every quote by exactly the amount that makes
+   * multi-character shots work.
+   */
+  const keyframes = keyframesEnabled()
+    ? input.image.estimateCostCents({
+        prompt: '',
+        count: expected,
+        aspectRatio: '9:16',
+        identityImageUrls: input.image.supportsIdentity ? ['reference'] : [],
+      })
+    : 0;
 
   // Only the spoken share of the runtime is synthesised.
   const spokenWords = Math.round(input.targetSeconds * DIALOGUE_FRACTION * WORDS_PER_SECOND);
@@ -114,15 +135,15 @@ export function estimateRun(input: {
   // deliberately absent rather than guessed at.
   const assembly = 0;
 
-  const totalCents = LLM_CENTS + cast + video + voice + assembly;
+  const totalCents = LLM_CENTS + cast + keyframes + video + voice + assembly;
 
   return {
     targetSeconds: input.targetSeconds,
     shots: { min, max, expected },
     characters,
-    breakdown: { script: LLM_CENTS, cast, video, voice, assembly },
+    breakdown: { script: LLM_CENTS, cast, keyframes, video, voice, assembly },
     totalCents,
-    maxCents: LLM_CENTS + cast + perClip * max + voice + assembly,
+    maxCents: LLM_CENTS + cast + keyframes + perClip * max + voice + assembly,
     minutes: SETUP_MINUTES + Math.ceil(expected / MAX_INFLIGHT_VIDEO_JOBS) * MINUTES_PER_CLIP,
     concurrency: MAX_INFLIGHT_VIDEO_JOBS,
   };

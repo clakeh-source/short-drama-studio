@@ -68,13 +68,38 @@ export function identityModel(): string {
   return process.env.FAL_IMAGE_IDENTITY_MODEL?.trim() || DEFAULT_IDENTITY_MODEL;
 }
 
-/** Which model a request goes to, decided solely by whether a face was given. */
-export function modelFor(input: Pick<ImageGenInput, 'identityImageUrl'>): {
+/**
+ * How many faces the configured identity model actually reads.
+ *
+ * PuLID and InstantID take one. Multi-identity models exist and take several,
+ * and the whole point of `identityImageUrls` being ordered is that raising this
+ * is the only change needed to use one.
+ *
+ * Deliberately conservative: sending a second face to a model that reads one is
+ * harmless, but *claiming* both were used when only the first was is exactly
+ * the silent-drift failure this file keeps guarding against. The caller is told
+ * how many were used so it can say so.
+ */
+export function identityCapacity(): number {
+  const raw = Number(process.env.FAL_IMAGE_IDENTITY_CAPACITY);
+  if (!Number.isFinite(raw) || raw < 1) return 1;
+  return Math.min(Math.floor(raw), 4);
+}
+
+/** Which model a request goes to, decided solely by whether faces were given. */
+export function modelFor(input: Pick<ImageGenInput, 'identityImageUrls'>): {
   model: string;
   identity: boolean;
+  faces: string[];
 } {
-  const identity = Boolean(input.identityImageUrl?.trim());
-  return { model: identity ? identityModel() : imageModel(), identity };
+  const faces = (input.identityImageUrls ?? []).map((u) => u.trim()).filter(Boolean);
+  const identity = faces.length > 0;
+
+  return {
+    model: identity ? identityModel() : imageModel(),
+    identity,
+    faces: faces.slice(0, identityCapacity()),
+  };
 }
 
 function centsPerImage(identity: boolean): number {
@@ -117,9 +142,10 @@ interface FluxResult {
 export class FalImageProvider implements ImageProvider {
   readonly id = 'fal';
   readonly supportsIdentity = true;
+  readonly identityCapacity = identityCapacity();
 
   estimateCostCents(input: ImageGenInput): number {
-    return Math.ceil(input.count * centsPerImage(Boolean(input.identityImageUrl)));
+    return Math.ceil(input.count * centsPerImage(Boolean(input.identityImageUrls?.length)));
   }
 
   /** The outgoing request, built without sending it. Asserted in tests. */
@@ -127,14 +153,17 @@ export class FalImageProvider implements ImageProvider {
     url: string;
     model: string;
     identity: boolean;
+    /** How many of the supplied faces this model will actually read. */
+    facesUsed: number;
     body: Record<string, unknown>;
   } {
-    const { model, identity } = modelFor(input);
+    const { model, identity, faces } = modelFor(input);
 
     return {
       url: `${QUEUE_BASE}/${model}`,
       model,
       identity,
+      facesUsed: faces.length,
       body: {
         prompt: input.prompt,
         image_size: imageSize(input.aspectRatio),
@@ -143,17 +172,21 @@ export class FalImageProvider implements ImageProvider {
         // Flux has no negative prompt; models that do read this field.
         ...(input.negativePrompt ? { negative_prompt: input.negativePrompt } : {}),
         /**
-         * The face to preserve. PuLID names it `reference_image_url`; InstantID
-         * and IP-Adapter FaceID call it `image_url`. Both are sent because they
-         * are mutually exclusive in practice — a model reads the one it knows
-         * and ignores the other — and getting the name wrong means the
-         * reference is silently dropped, which is the failure this whole path
-         * exists to prevent.
+         * The faces to preserve. PuLID names the field `reference_image_url`;
+         * InstantID and IP-Adapter FaceID call it `image_url`. Both are sent
+         * because they are mutually exclusive in practice — a model reads the
+         * one it knows and ignores the other — and getting the name wrong means
+         * the reference is silently dropped, which is the failure this whole
+         * path exists to prevent.
+         *
+         * `reference_image_urls` carries the whole set for multi-identity
+         * models. Single-identity models ignore it and read the scalar.
          */
         ...(identity
           ? {
-              reference_image_url: input.identityImageUrl,
-              image_url: input.identityImageUrl,
+              reference_image_url: faces[0],
+              image_url: faces[0],
+              ...(faces.length > 1 ? { reference_image_urls: faces } : {}),
             }
           : {}),
       },
@@ -237,7 +270,7 @@ export class FalImageProvider implements ImageProvider {
 
       return {
         images,
-        costCents: Math.ceil(images.length * centsPerImage(Boolean(input.identityImageUrl))),
+        costCents: Math.ceil(images.length * centsPerImage(Boolean(input.identityImageUrls?.length))),
       };
     }
 

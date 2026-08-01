@@ -1,5 +1,6 @@
 import { NonRetriableError } from 'inngest';
 import { screenWithRules } from '@/lib/ai/safety';
+import { buildShotKeyframe } from '@/lib/characters/keyframe';
 import { loadShotReferenceSet } from '@/lib/characters/reference-set';
 import {
   claimVideoSlot,
@@ -12,7 +13,7 @@ import {
   upsertAsset,
 } from '@/lib/data/generation';
 import { log } from '@/lib/log';
-import { getVideoProvider, ProviderRequestError } from '@/lib/providers';
+import { getImageProvider, getVideoProvider, ProviderRequestError } from '@/lib/providers';
 import { assertWithinSpendCap, SpendCapError } from '@/lib/spend';
 import { clipPath, ingestFromUrl } from '@/lib/storage';
 import { recordUsage } from '@/lib/usage';
@@ -143,12 +144,79 @@ export const generateShotVideo = inngest.createFunction(
        */
       const references = await loadShotReferenceSet(shot.characterIds);
 
+      /**
+       * A start frame drawn for *this shot*, not a portrait of one of its
+       * characters.
+       *
+       * The video model conditions on a single image. Sending a studio portrait
+       * meant a two-hander only ever preserved the first-billed face, and every
+       * clip opened on a grey backdrop it had to travel out of. A keyframe of
+       * the actual composition fixes both, and falls back to the portraits when
+       * it cannot be drawn.
+       */
+      const keyframe = await buildShotKeyframe({
+        userId,
+        episodeId,
+        shotId,
+        version,
+        prompt,
+        negativePrompt: shot.negativePrompt,
+        references,
+      });
+
+      /**
+       * The keyframe is an asset and is booked like one.
+       *
+       * It is stored, it cost money, and the spend ledger is reconciled against
+       * `assets.cost_cents` — so recording the charge without a row to hang it
+       * on would break that invariant, and recording neither would quietly
+       * understate what a film costs by one image per shot.
+       */
+      if (keyframe) {
+        const row = await upsertAsset({
+          shotId,
+          episodeId,
+          kind: 'image',
+          provider: getImageProvider().id,
+          attempt,
+          version,
+        });
+
+        await updateAsset(row.id, {
+          status: 'ready',
+          storagePath: keyframe.storagePath,
+          costCents: keyframe.costCents,
+          meta: {
+            attempt,
+            version,
+            ai_generated: true,
+            role: 'keyframe',
+            facesUsed: keyframe.facesUsed,
+            facesRequested: keyframe.facesRequested,
+            bytes: keyframe.bytes,
+          },
+        });
+
+        await recordUsage({
+          userId,
+          seriesId: series.id,
+          episodeId,
+          provider: getImageProvider().id,
+          operation: 'shot.keyframe',
+          costCents: keyframe.costCents,
+          idempotencyKey: `shot.keyframe:${shotId}:v${version}:${attempt}`,
+        });
+      }
+
       return {
         prompt,
         negativePrompt: shot.negativePrompt,
         durationSeconds: shot.durationSeconds,
         seriesId: series.id,
-        referenceImageUrls: references.urls,
+        // The keyframe supersedes the portraits when there is one: it already
+        // contains the characters, in the right place, at the right size.
+        referenceImageUrls: keyframe ? [keyframe.url] : references.urls,
+        keyframe,
         referenceCharacters: references.characters,
         estimateCents: provider.estimateCostCents({
           prompt,
@@ -298,6 +366,20 @@ export const generateShotVideo = inngest.createFunction(
           mode,
           referenceImageCount: plan.referenceImageUrls.length,
           referenceCharacters: plan.referenceCharacters,
+          /**
+           * What the clip was actually conditioned on. `facesUsed` is the
+           * honest number — a two-hander drawn by a single-identity model
+           * conditions on one face and the other character comes from the
+           * prompt, and that is worth being able to read off the row.
+           */
+          keyframe: plan.keyframe
+            ? {
+                storagePath: plan.keyframe.storagePath,
+                facesUsed: plan.keyframe.facesUsed,
+                facesRequested: plan.keyframe.facesRequested,
+                costCents: plan.keyframe.costCents,
+              }
+            : null,
         },
       });
       await setShotStatus(shotId, 'generating');
@@ -363,6 +445,13 @@ export const generateShotVideo = inngest.createFunction(
             mode: plan.referenceImageUrls.length > 0 ? 'image-to-video' : 'text-to-video',
             referenceImageCount: plan.referenceImageUrls.length,
             referenceCharacters: plan.referenceCharacters,
+            keyframe: plan.keyframe
+              ? {
+                  storagePath: plan.keyframe.storagePath,
+                  facesUsed: plan.keyframe.facesUsed,
+                  facesRequested: plan.keyframe.facesRequested,
+                }
+              : null,
             bytes: stored.bytes,
             ...(result.meta ?? {}),
           },

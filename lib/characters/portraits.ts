@@ -155,7 +155,7 @@ export async function generateCharacterPortraits(
       count: 1,
       aspectRatio: '9:16',
       seed,
-      ...(conditioned ? { identityImageUrl: heroUrl! } : {}),
+      ...(conditioned ? { identityImageUrls: [heroUrl!] } : {}),
     });
 
     costCents += result.costCents;

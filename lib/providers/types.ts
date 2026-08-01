@@ -217,21 +217,26 @@ export interface ImageGenInput {
   seed?: number;
 
   /**
-   * A photograph the generated image must look like the same person as.
+   * Photographs of the people this image must contain.
    *
-   * The strong form. Presence switches the adapter to an identity-preserving
-   * model, which takes the face from this image and the pose, framing and
-   * setting from the prompt. That is the difference between a canonical set
-   * that is one character and one that is three cousins.
+   * The strong form. A non-empty set switches the adapter to an
+   * identity-preserving model, which takes the faces from these images and the
+   * pose, framing and setting from the prompt. That is the difference between a
+   * canonical set that is one character and one that is three cousins — and,
+   * for a shot keyframe, between two named people and two strangers.
    *
-   * Must be a URL the provider can fetch — these models pull the reference
-   * themselves, so a signed URL needs to outlive the queue wait.
+   * Ordered, and the order is meaningful: a model that accepts fewer identities
+   * than are supplied takes them from the front, so callers put the character
+   * the shot is *about* first.
+   *
+   * Must be URLs the provider can fetch — these models pull the references
+   * themselves, so signed URLs need to outlive the queue wait.
    *
    * Ignored by providers whose `supportsIdentity` is false. Callers check that
    * rather than assuming, because silently dropping it would produce exactly
    * the drift this field exists to remove, with no sign anything was wrong.
    */
-  identityImageUrl?: string;
+  identityImageUrls?: string[];
 }
 
 export interface GeneratedImage {
@@ -242,7 +247,7 @@ export interface GeneratedImage {
 export interface ImageProvider {
   readonly id: string;
   /**
-   * Whether `identityImageUrl` does anything here.
+   * Whether `identityImageUrls` does anything here.
    *
    * Declared rather than inferred so a caller can *degrade deliberately* — fall
    * back to a shared seed and record that the set is not identity-locked —
@@ -250,6 +255,17 @@ export interface ImageProvider {
    * drift it has no way to detect.
    */
   readonly supportsIdentity: boolean;
+  /**
+   * How many faces this provider's model will actually read.
+   *
+   * Declared, because "we sent two references" and "it conditioned on two" are
+   * different claims and only the second one fixes a two-hander. A caller that
+   * assumed the first would report a shot as multi-character locked when the
+   * second person was still being drawn from the prompt.
+   *
+   * 1 for PuLID and InstantID; higher for multi-identity models.
+   */
+  readonly identityCapacity: number;
   estimateCostCents(input: ImageGenInput): number;
   /**
    * Synchronous from the caller's point of view.

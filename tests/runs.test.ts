@@ -44,10 +44,27 @@ describe('estimateRun', () => {
     const estimate = estimateRun({ targetSeconds: 180, ...providers() });
 
     expect(estimate.shots.expected).toBe(36);
-    // 36 clips at 5s and 9c/s is where essentially all of the money goes.
+    // 36 clips at 5s and 9c/s is where the overwhelming majority goes.
     expect(estimate.breakdown.video).toBe(1620);
-    expect(estimate.totalCents).toBeGreaterThan(1600);
-    expect(estimate.totalCents).toBeLessThan(1800);
+    expect(estimate.breakdown.video / estimate.totalCents).toBeGreaterThan(0.8);
+    expect(estimate.totalCents).toBeGreaterThan(1800);
+    expect(estimate.totalCents).toBeLessThan(2100);
+  });
+
+  it('counts a keyframe for every shot', () => {
+    const estimate = estimateRun({ targetSeconds: 180, ...providers() });
+
+    // One start frame per clip, at the identity rate. Leaving it out would
+    // understate every quote by exactly what makes multi-character shots work.
+    expect(estimate.breakdown.keyframes).toBe(estimate.shots.expected * 5);
+    expect(estimate.totalCents).toBe(
+      estimate.breakdown.script +
+        estimate.breakdown.cast +
+        estimate.breakdown.keyframes +
+        estimate.breakdown.video +
+        estimate.breakdown.voice +
+        estimate.breakdown.assembly,
+    );
   });
 
   it('scales with the target length', () => {
@@ -63,7 +80,7 @@ describe('estimateRun', () => {
     const estimate = estimateRun({ targetSeconds: 180, ...providers() });
 
     // The planner is allowed to land anywhere in its range, and someone about to
-    // spend $17 should be told it could be $28.
+    // spend $19 should be told it could be $30.
     expect(estimate.maxCents).toBeGreaterThan(estimate.totalCents);
     expect(estimate.shots.max).toBe(shotCountRange(180).max);
   });
@@ -76,10 +93,12 @@ describe('estimateRun', () => {
     }
   });
 
-  it('costs the cast as three stills each', () => {
+  it('costs the cast as three stills each, at the identity rate', () => {
     const estimate = estimateRun({ targetSeconds: 180, characterCount: 5, ...providers() });
-    // 5 characters x 3 canonical stills x 3c.
-    expect(estimate.breakdown.cast).toBe(45);
+    // 5 characters x 3 canonical stills x 5c — the identity model, because the
+    // set is generated hero-first and conditioned. Quoting the plain rate would
+    // under-report every cast the autorun draws.
+    expect(estimate.breakdown.cast).toBe(75);
   });
 
   it('describes itself in one line a person can act on', () => {
@@ -87,8 +106,8 @@ describe('estimateRun', () => {
 
     expect(line).toMatch(/36 shots/);
     expect(line).toMatch(/3-minute/);
-    expect(line).toMatch(/\$17\./);
-    expect(line).toMatch(/\$28\./);
+    expect(line).toMatch(/\$19\./);
+    expect(line).toMatch(/\$30\./);
     // The gap between "a 3-minute film" and half an hour of waiting is where
     // someone decides the app has hung, so the time is part of the quote.
     expect(line).toMatch(/minutes at \d+ clips at a time/);

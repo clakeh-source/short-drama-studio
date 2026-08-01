@@ -85,6 +85,8 @@ function hash(value: string): number {
 export class StubImageProvider implements ImageProvider {
   readonly id = 'stub';
   readonly supportsIdentity = true;
+  /** The stub encodes one identity, so it reads one. */
+  readonly identityCapacity = 1;
 
   estimateCostCents(input: ImageGenInput): number {
     return Math.max(1, input.count * CENTS_PER_IMAGE);
@@ -111,7 +113,7 @@ export class StubImageProvider implements ImageProvider {
      * fake provider — without it, identity-preservation would be a code path
      * nothing could check until it was pointed at a real model.
      */
-    const identity = input.identityImageUrl?.trim();
+    const identity = input.identityImageUrls?.map((u) => u.trim()).filter(Boolean).join('|') || undefined;
     const base = hash(identity ?? input.prompt);
 
     const images = Array.from({ length: input.count }, (_, i) => {
