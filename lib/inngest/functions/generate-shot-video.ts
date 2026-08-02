@@ -1,7 +1,8 @@
 import { NonRetriableError } from 'inngest';
 import { screenWithRules } from '@/lib/ai/safety';
-import { buildShotKeyframe } from '@/lib/characters/keyframe';
+import { buildShotKeyframe, KEYFRAME_URL_TTL_SECONDS } from '@/lib/characters/keyframe';
 import { loadShotReferenceSet } from '@/lib/characters/reference-set';
+import { pinnedShotKeyframe } from '@/lib/assets/reuse';
 import {
   claimVideoSlot,
   MAX_INFLIGHT_VIDEO_JOBS,
@@ -15,7 +16,7 @@ import {
 import { log } from '@/lib/log';
 import { getImageProvider, getVideoProvider, ProviderRequestError } from '@/lib/providers';
 import { assertWithinSpendCap, SpendCapError } from '@/lib/spend';
-import { clipPath, ingestFromUrl } from '@/lib/storage';
+import { clipPath, ingestFromUrl, signedUrl } from '@/lib/storage';
 import { recordUsage } from '@/lib/usage';
 import { inngest, shotVideoEventId } from '../client';
 import { pollSchedule, toSleepDuration } from '../backoff';
@@ -154,15 +155,40 @@ export const generateShotVideo = inngest.createFunction(
        * the actual composition fixes both, and falls back to the portraits when
        * it cannot be drawn.
        */
-      const keyframe = await buildShotKeyframe({
-        userId,
-        episodeId,
-        shotId,
-        version,
-        prompt,
-        negativePrompt: shot.negativePrompt,
-        references,
-      });
+      /**
+       * A frame someone pinned from the Assets library wins over drawing one.
+       *
+       * They looked at it and chose it, which is better information than
+       * anything this job has — and it saves the image the keyframe would have
+       * cost. Checked before `buildShotKeyframe` so nothing is spent finding
+       * out it was not needed.
+       */
+      const pinned = await pinnedShotKeyframe(shotId);
+      const pinnedUrl = pinned ? await signedUrl(pinned.storagePath, KEYFRAME_URL_TTL_SECONDS) : null;
+
+      const keyframe = pinnedUrl
+        ? null
+        : await buildShotKeyframe({
+            userId,
+            episodeId,
+            shotId,
+            version,
+            prompt,
+            negativePrompt: shot.negativePrompt,
+            references,
+          });
+
+      if (pinned && !pinnedUrl) {
+        // The row is there and the object is not, or signing failed. Say so —
+        // the shot is about to be generated *without* the frame someone
+        // deliberately chose, and silently ignoring that choice is worse than
+        // the extra 5c of drawing one.
+        log.warn('a pinned start frame could not be signed; drawing one instead', {
+          ...context,
+          operation: 'shot.keyframe.pinned_unavailable',
+          storagePath: pinned.storagePath,
+        });
+      }
 
       /**
        * The keyframe is an asset and is booked like one.
@@ -215,7 +241,17 @@ export const generateShotVideo = inngest.createFunction(
         seriesId: series.id,
         // The keyframe supersedes the portraits when there is one: it already
         // contains the characters, in the right place, at the right size.
-        referenceImageUrls: keyframe ? [keyframe.url] : references.urls,
+        /**
+         * Precedence: a pinned frame, then a drawn one, then the portraits.
+         * The pin is a decision someone made; the keyframe is this job's best
+         * guess; the portraits are the fallback from before either existed.
+         */
+        referenceImageUrls: pinnedUrl
+          ? [pinnedUrl]
+          : keyframe
+            ? [keyframe.url]
+            : references.urls,
+        pinnedKeyframe: pinnedUrl ? { storagePath: pinned!.storagePath } : null,
         keyframe,
         referenceCharacters: references.characters,
         /**

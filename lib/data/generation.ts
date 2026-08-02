@@ -425,7 +425,19 @@ export async function pruneShotVersions(
 
   if (doomed.length === 0) return { prunedVersions: [], deletedObjects: 0 };
 
-  const condemned = rows.filter((r) => doomed.includes(r.version));
+  /**
+   * A pinned asset is never pruned.
+   *
+   * Pruning is a rule about *takes* — the fourth regeneration makes the first
+   * one uninteresting. A pinned start frame is not a take: someone chose it,
+   * and it is the input to future takes rather than the output of an old one.
+   * Deleting it by version count would remove the image the next generation is
+   * supposed to start from, and the shot would quietly go back to drawing its
+   * own keyframe.
+   */
+  const condemned = rows.filter(
+    (r) => doomed.includes(r.version) && (r.meta as { pinned?: boolean } | null)?.pinned !== true,
+  );
   const paths = condemned
     .map((r) => r.storagePath)
     .filter((p): p is string => Boolean(p));

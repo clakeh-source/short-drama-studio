@@ -86,6 +86,21 @@ export interface StorageProvider {
   list(bucket: Bucket, prefix: string): Promise<ListedObject[]>;
 
   /**
+   * Duplicates an object to a new key, returning the copy.
+   *
+   * Reuse copies rather than references, and this is why: assets are pruned.
+   * `pruneShotVersions` deletes the objects of every take beyond the last
+   * three, so a character reference that merely *pointed* at a shot's keyframe
+   * would turn into a broken image the moment that shot was regenerated four
+   * times — long after the reuse, with nothing to connect cause to effect.
+   *
+   * A copy costs storage, which is cents a month, and buys an asset whose
+   * lifetime belongs to whoever reused it. It is also what lets an asset cross
+   * from one series to another, since ownership is by path.
+   */
+  copy(from: string, to: { bucket: Bucket; path: string }): Promise<StoredObject>;
+
+  /**
    * Removes objects by `bucket/path` key.
    *
    * Takes a list because every real caller has one — deleting a character

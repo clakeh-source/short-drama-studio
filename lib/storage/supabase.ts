@@ -128,6 +128,50 @@ export class SupabaseStorageProvider implements StorageProvider {
       });
   }
 
+  async copy(from: string, to: { bucket: Bucket; path: string }): Promise<StoredObject> {
+    const split = splitStoragePath(from);
+    if (!split) throw new Error(`Cannot copy "${from}": not a bucket/path key.`);
+
+    const supabase = createAdminClient();
+    const destination = this.bucketName(to.bucket);
+
+    /**
+     * Server-side copy: the bytes never come back to this process.
+     *
+     * A download-then-upload would work too and would move a 20MB clip through
+     * Node twice for no reason. Supabase copies across buckets, which matters
+     * because reuse routinely crosses them — a keyframe lives in `references`
+     * and a clip in `clips`.
+     */
+    const { error } = await supabase.storage
+      .from(split.bucket)
+      .copy(split.path, to.path, { destinationBucket: destination });
+
+    if (error) {
+      throw new Error(`Storage copy failed (${from} → ${destination}/${to.path}): ${error.message}`);
+    }
+
+    // The size comes from the store rather than being assumed equal to the
+    // source: the copy is the object that now exists, and a caller recording
+    // `bytes` should be recording that one.
+    const stat = await this.stat(`${destination}/${to.path}`);
+
+    log.info('copied object', {
+      operation: 'storage.copy',
+      from,
+      to: `${destination}/${to.path}`,
+      bytes: stat?.bytes ?? 0,
+    });
+
+    return {
+      storagePath: `${destination}/${to.path}`,
+      bucket: to.bucket,
+      path: to.path,
+      bytes: stat?.bytes ?? 0,
+      contentType: stat?.contentType ?? 'application/octet-stream',
+    };
+  }
+
   async delete(storagePaths: readonly string[]): Promise<void> {
     const byBucket = groupByBucket(storagePaths);
     if (byBucket.size === 0) return;

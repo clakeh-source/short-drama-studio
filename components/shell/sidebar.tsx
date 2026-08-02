@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Clapperboard, Film, LibraryBig, Receipt, Sparkles } from 'lucide-react';
+import { Clapperboard, Film, FolderOpen, LibraryBig, Receipt, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const NAV = [
@@ -11,6 +11,8 @@ const NAV = [
   { href: '/create', label: 'Create', icon: Sparkles },
   { href: '/series', label: 'Series', icon: Film },
   { href: '/library', label: 'Library', icon: LibraryBig },
+  // Library is finished episodes; Assets is everything they were made from.
+  { href: '/assets', label: 'Assets', icon: FolderOpen },
   { href: '/usage', label: 'Usage', icon: Receipt },
 ] as const;
 

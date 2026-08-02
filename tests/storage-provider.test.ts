@@ -34,6 +34,7 @@ class RecordingProvider implements StorageProvider {
   readonly uploads: UploadInput[] = [];
   readonly deletes: string[][] = [];
   readonly signs: Array<{ paths: string[]; ttlSeconds: number | undefined }> = [];
+  readonly copies: Array<{ from: string; to: string }> = [];
 
   async upload(input: UploadInput): Promise<StoredObject> {
     this.uploads.push(input);
@@ -64,6 +65,17 @@ class RecordingProvider implements StorageProvider {
 
   async list(): Promise<ListedObject[]> {
     return [];
+  }
+
+  async copy(from: string, to: { bucket: Bucket; path: string }): Promise<StoredObject> {
+    this.copies.push({ from, to: `${to.bucket}/${to.path}` });
+    return {
+      storagePath: `${to.bucket}/${to.path}`,
+      bucket: to.bucket,
+      path: to.path,
+      bytes: 1234,
+      contentType: 'image/png',
+    };
   }
 
   async getSignedUrl(storagePath: string, ttlSeconds?: number): Promise<string | null> {

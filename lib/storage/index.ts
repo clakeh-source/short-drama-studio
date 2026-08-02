@@ -141,6 +141,20 @@ export function listObjects(bucket: Bucket, prefix: string): Promise<ListedObjec
   return storage().list(bucket, prefix);
 }
 
+/**
+ * Duplicates an object so the copy's lifetime belongs to whoever reused it.
+ *
+ * See the note on `StorageProvider.copy`: reuse cannot be a reference, because
+ * the pruner deletes the objects of old takes and would take the reference's
+ * target with them.
+ */
+export function copyObject(
+  from: string,
+  to: { bucket: Bucket; path: string },
+): Promise<StoredObject> {
+  return storage().copy(from, to);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Path layout                                                                */
 /* -------------------------------------------------------------------------- */

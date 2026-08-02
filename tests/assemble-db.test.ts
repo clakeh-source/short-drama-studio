@@ -25,6 +25,9 @@ class FakeStorage implements StorageProvider {
   async upload(): Promise<StoredObject> {
     throw new Error('not used');
   }
+  async copy(): Promise<StoredObject> {
+    throw new Error('not used');
+  }
   async delete(): Promise<void> {}
   async getSignedUrl(path: string): Promise<string | null> {
     return `https://signed.test/${path}`;

@@ -46,7 +46,7 @@ import type { ShotReferenceSet } from '@/lib/characters/reference-set';
  * an expired URL means the clip is generated from the prompt alone, and nothing
  * downstream can tell that happened.
  */
-const KEYFRAME_URL_TTL_SECONDS = 6 * 60 * 60;
+export const KEYFRAME_URL_TTL_SECONDS = 6 * 60 * 60;
 
 /** Turning keyframes off falls back to conditioning on the canonical stills. */
 export function keyframesEnabled(): boolean {

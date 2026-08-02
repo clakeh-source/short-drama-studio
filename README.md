@@ -1257,3 +1257,42 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
     forward to the ready branch, because `updateAsset` replaces `meta` rather
     than merging it, and a finished clip would otherwise be the one row that no
     longer says what it was conditioned on.
+
+## Assets
+
+Everything generated, in one place, reusable. `/assets`.
+
+Four things produce stored objects and none knew about each other: a shot's
+clips and keyframes, a character's reference stills, an episode's finished cuts,
+and voice tracks. They live in different tables because they have different
+owners and lifetimes — which is right, and left no answer to "what have I made",
+and no way to use a picture you already paid for in a shot that needs one.
+
+80. **Reuse copies the object; it never points at it.** `pruneShotVersions`
+    deletes the objects of every take beyond the last three. A character
+    reference pointing at a shot's keyframe would therefore lose its face the
+    fourth time that shot was regenerated — days later, as a broken image, with
+    nothing linking it to the regeneration that caused it. A copy costs cents a
+    month and buys an asset whose lifetime belongs to whoever reused it. It is
+    also what lets an asset cross series, since ownership here is by path.
+
+81. **A pinned start frame is not a take, so pruning leaves it alone.** Pruning
+    is a rule about outputs — the fourth regeneration makes the first
+    uninteresting. A pinned frame is an *input* to future takes, chosen by a
+    person. Deleting it by version count would send the shot back to drawing its
+    own keyframe, silently, having been told not to.
+
+82. **Reuse is free, and recorded as free.** The image was paid for when it was
+    generated. A pinned keyframe is written with `cost_cents: 0`, because
+    charging again would double-count against the spend cap and overstate what
+    the film cost. It also saves the ~5c the job would have spent drawing a
+    keyframe it was about to be handed.
+
+83. **Every failure path after the copy deletes the copy.** An object with no row
+    is invisible: not in this library, not deleted with its owner, and visible
+    only as a line on a storage bill. This project has already paid that debt
+    once — a sweeper and 510 deletions — and the ordering rules here are the
+    lesson. Rows first, then storage, except when replacing a pin, where the
+    superseded object goes only after the new row has committed: a rollback that
+    restored a row pointing at a deleted object would be unrecoverable, while a
+    leftover object is one `pnpm orphans` away.

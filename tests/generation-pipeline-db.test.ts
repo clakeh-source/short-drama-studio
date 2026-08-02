@@ -46,6 +46,9 @@ class RecordingStorage implements StorageProvider {
   async upload(): Promise<StoredObject> {
     throw new Error('not used');
   }
+  async copy(): Promise<StoredObject> {
+    throw new Error('not used');
+  }
   async delete(paths: readonly string[]): Promise<void> {
     this.deleted.push(...paths);
   }
