@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { inflateSync } from 'node:zlib';
 import {
   FalImageProvider,
   identityCapacity,
@@ -291,10 +292,31 @@ describe('the stub propagates identity', () => {
   });
 });
 
-/** Reads one RGB byte out of the stub's 1x1 data-URL PNG. */
+/**
+ * Reads one RGB byte of the stub PNG's top-left pixel.
+ *
+ * Decoded rather than byte-poked. The stub used to emit an uncompressed 1x1
+ * image, which made "read the byte at a fixed offset" work by accident; it now
+ * emits a real 360x640 frame with a deflated IDAT, because a 1x1 still is
+ * invisible in the UI and made a generated cast look like no cast at all.
+ * Inflating is what makes this assertion about the *image* rather than about
+ * the encoder's layout.
+ */
 function channel(dataUrl: string, index: 0 | 1 | 2): number {
   const png = Buffer.from(dataUrl.split(',')[1]!, 'base64');
-  // IDAT payload sits after the fixed-size signature, IHDR and zlib header.
-  const idat = png.indexOf(Buffer.from('IDAT', 'ascii'));
-  return png[idat + 4 + 7 + 1 + index]!;
+
+  // Walk the chunks and concatenate every IDAT, which is where the pixels are.
+  const parts: Buffer[] = [];
+  let offset = 8; // past the signature
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.toString('ascii', offset + 4, offset + 8);
+    if (type === 'IDAT') parts.push(png.subarray(offset + 8, offset + 8 + length));
+    if (type === 'IEND') break;
+    offset += 12 + length; // length + type + data + crc
+  }
+
+  // Scanline 0 is a filter byte followed by RGB triples.
+  const raw = inflateSync(Buffer.concat(parts));
+  return raw[1 + index]!;
 }

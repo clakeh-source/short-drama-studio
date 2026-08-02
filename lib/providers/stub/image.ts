@@ -1,3 +1,4 @@
+import { deflateSync } from 'node:zlib';
 import type { GeneratedImage, ImageGenInput, ImageProvider } from '../types';
 import { appOrigin, delay, failureFor, STUB_LATENCY_MS } from './support';
 
@@ -16,7 +17,22 @@ import { appOrigin, delay, failureFor, STUB_LATENCY_MS } from './support';
  */
 const CENTS_PER_IMAGE = 1;
 
-/** A 1x1 PNG in the given RGB, built by hand. Small, valid, and decodable. */
+/**
+ * The frame a stub image fills.
+ *
+ * This used to emit a 1x1 pixel. It was valid, decodable and tiny — and it
+ * meant a character's reference stills rendered as nothing at all, so a run
+ * that generated a full cast looked exactly like a run that generated no
+ * characters. The image *was* there; there was simply nothing to see.
+ *
+ * 9:16 at a modest size, so a still looks like a portrait in a grid, scales
+ * without pixelating in a card, and still compresses to a couple of kilobytes
+ * because it is flat colour.
+ */
+const STUB_WIDTH = 360;
+const STUB_HEIGHT = 640;
+
+/** A PNG of flat colour, built by hand. Valid, decodable, and visible. */
 function pngDataUrl(r: number, g: number, b: number): string {
   const crcTable = Array.from({ length: 256 }, (_, n) => {
     let c = n;
@@ -40,28 +56,39 @@ function pngDataUrl(r: number, g: number, b: number): string {
   };
 
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(1, 0); // width
-  ihdr.writeUInt32BE(1, 4); // height
+  ihdr.writeUInt32BE(STUB_WIDTH, 0);
+  ihdr.writeUInt32BE(STUB_HEIGHT, 4);
   ihdr[8] = 8; // bit depth
   ihdr[9] = 2; // colour type: truecolour
-  const raw = Buffer.from([0x00, r, g, b]);
 
-  // zlib stored block — avoids pulling in a compressor for four bytes.
-  const deflated = Buffer.concat([
-    Buffer.from([0x78, 0x01, 0x01, 0x04, 0x00, 0xfb, 0xff]),
-    raw,
-    (() => {
-      let a = 1;
-      let b2 = 0;
-      for (const byte of raw) {
-        a = (a + byte) % 65521;
-        b2 = (b2 + a) % 65521;
-      }
-      const adler = Buffer.alloc(4);
-      adler.writeUInt32BE(((b2 << 16) | a) >>> 0);
-      return adler;
-    })(),
-  ]);
+  /**
+   * Scanlines, each with a leading filter byte.
+   *
+   * The top-left pixel carries the exact RGB the caller asked for, untouched by
+   * any shading, because that pixel is the identity channel every test reads
+   * back. A band across the lower third makes the placeholder legible as a
+   * placeholder rather than as a solid rectangle someone might mistake for a
+   * failed render.
+   */
+  const row = (shade: number): Buffer => {
+    const line = Buffer.alloc(1 + STUB_WIDTH * 3);
+    for (let x = 0; x < STUB_WIDTH; x++) {
+      line[1 + x * 3] = Math.min(255, Math.round(r * shade));
+      line[2 + x * 3] = Math.min(255, Math.round(g * shade));
+      line[3 + x * 3] = Math.min(255, Math.round(b * shade));
+    }
+    return line;
+  };
+
+  const raw = Buffer.concat(
+    Array.from({ length: STUB_HEIGHT }, (_, y) => row(y > STUB_HEIGHT * 0.66 ? 0.55 : 1)),
+  );
+  // The identity pixel, restored exactly after the shading pass.
+  raw[1] = r;
+  raw[2] = g;
+  raw[3] = b;
+
+  const deflated = deflateSync(raw);
 
   const png = Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
