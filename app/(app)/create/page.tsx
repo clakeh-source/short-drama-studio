@@ -15,9 +15,22 @@ export default async function CreatePage() {
   const user = await requireUser();
 
   const recent = await listRuns(user.id, 5);
-  const active = recent.find((run) =>
-    ['pending', 'running', 'awaiting_gate'].includes(run.status),
-  );
+
+  /**
+   * A run in flight if there is one, otherwise the last one there was.
+   *
+   * The fallback is the whole point. This used to reopen only unfinished runs,
+   * so the moment a film *completed* the page reverted to an empty prompt box:
+   * you waited twenty minutes, it worked, and the screen that made it showed no
+   * trace of it. The film was in the Library, which you would only know if
+   * someone told you.
+   *
+   * Reopening the finished run instead shows the video, what it cost, and a
+   * "Make another" button that clears it deliberately.
+   */
+  const active =
+    recent.find((run) => ['pending', 'running', 'awaiting_gate'].includes(run.status)) ??
+    recent[0];
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
