@@ -129,7 +129,8 @@ export const autorun = inngest.createFunction(
 
       // Gates sit *before* the stage that follows them, so what is being judged
       // is work that already exists.
-      if (isGated(previousStage(run.stage)) && run.status !== 'running') {
+      const judging = previousStage(run.stage);
+      if (judging !== null && isGated(judging) && run.status !== 'running') {
         const seconds = gateSeconds();
 
         await step.run(`gate-open-${run.stage}`, () =>
@@ -255,10 +256,22 @@ function requireSeries(seriesId: string | null | undefined): string {
   return seriesId;
 }
 
-function previousStage(stage: RunStage): RunStage {
+/**
+ * The stage before this one, or null at the start of the run.
+ *
+ * Null matters. This used to fall back to `'bible'` for the first stage, which
+ * is itself gated — so every run opened a gate *before writing anything*, asked
+ * the user to review a show that did not exist yet, and sat there for two
+ * minutes. The gate copy compounded it by describing the shot list, because the
+ * only stage it recognised was `cast`.
+ *
+ * A gate exists to judge work that has already been done. Before the first
+ * stage there is nothing to judge, so there is no gate.
+ */
+function previousStage(stage: RunStage): RunStage | null {
   const order: RunStage[] = ['bible', 'cast', 'script', 'storyboard', 'shots', 'assemble', 'done'];
   const index = order.indexOf(stage);
-  return order[index - 1] ?? 'bible';
+  return index > 0 ? (order[index - 1] ?? null) : null;
 }
 
 async function firstEpisodeId(seriesId: string): Promise<string> {

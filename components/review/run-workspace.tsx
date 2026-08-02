@@ -516,10 +516,20 @@ export function RunWorkspace({ initialRunId }: { initialRunId: string | null }) 
               ) : null}
             </div>
 
+            {/*
+              Written against the stage the run is *about to enter*, which is
+              how the supervisor opens a gate: a gate before `cast` is judging
+              the bible, and one before `shots` is judging the shot list.
+              Anything else falls back to a description that does not claim to
+              know which — rather than asserting the shot list is ready when it
+              is not, which is what this did when a gate opened unexpectedly.
+            */}
             <p className="text-sm text-muted-foreground">
               {run.stage === 'cast'
                 ? 'The show and its cast are written. Stopping now costs nothing; carrying on starts drawing the characters.'
-                : 'The shot list is planned. This is the last point before the expensive part — carrying on starts filming.'}
+                : run.stage === 'shots'
+                  ? 'The shot list is planned. This is the last point before the expensive part — carrying on starts filming.'
+                  : 'Paused before the next stage. Carrying on continues the run; stopping keeps everything made so far.'}
             </p>
 
             <div className="flex flex-wrap gap-2">

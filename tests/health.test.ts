@@ -31,6 +31,15 @@ describe('rollUp', () => {
 describe('checkQueue', () => {
   it('reports cloud mode without probing when an event key is set', async () => {
     process.env.INNGEST_EVENT_KEY = 'signkey-prod-not-a-real-key';
+    /**
+     * Cleared, not assumed absent.
+     *
+     * `INNGEST_DEV` wins over the event key by design, and a developer running
+     * locally has it set — so inheriting it from `.env.local` made this assert
+     * cloud mode against a dev-mode check and fail on a machine configured to
+     * work. The variable under test has to be controlled by the test.
+     */
+    delete process.env.INNGEST_DEV;
     resetEnvCache();
 
     const result = await checkQueue();
