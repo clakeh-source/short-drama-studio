@@ -28,11 +28,22 @@ export const POST = dynamicRoute<{ id: string }, z.infer<typeof bodySchema>>(
       );
     }
 
-    // Told to the supervisor, which is blocked on exactly this event. Writing the
-    // row alone would not wake it, and it would continue when the clock ran out.
+    /**
+     * Told to the supervisor, which is blocked on exactly this event. Writing
+     * the row alone would not wake it, and it would continue when the clock ran
+     * out.
+     *
+     * `stage` is what makes the answer belong to *this* gate. Matching on the
+     * run alone meant every gate in a run listened for the identical event, so
+     * a decision made at the bible gate could satisfy the shot-list gate that
+     * opened minutes later — the run sailing past the last checkpoint before
+     * the expensive part, on the strength of a click that was answering a
+     * different question. The stage comes from the row rather than the client,
+     * so a caller cannot claim to be answering a gate that is not open.
+     */
     await inngest.send({
       name: 'run/gate.resolved',
-      data: { userId: user.id, runId: params.id, action: body.action },
+      data: { userId: user.id, runId: params.id, stage: run.stage, action: body.action },
     });
 
     if (body.action === 'stop') {

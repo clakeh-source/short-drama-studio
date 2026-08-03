@@ -140,10 +140,20 @@ export const autorun = inngest.createFunction(
           }),
         );
 
+        /**
+         * Matched on the run *and the stage*.
+         *
+         * On the run alone, every gate listened for the same event, so an
+         * answer given at one gate could satisfy the next one — a run could
+         * pass the last checkpoint before the expensive part on the strength of
+         * a click that was answering a different question. Two chances to stop
+         * it has to mean two, so a decision now only resolves the gate it was
+         * made at.
+         */
         const decision = await step.waitForEvent(`gate-${run.stage}`, {
           event: 'run/gate.resolved',
           timeout: `${seconds}s`,
-          if: `async.data.runId == "${runId}"`,
+          if: `async.data.runId == "${runId}" && async.data.stage == "${run.stage}"`,
         });
 
         // No decision means the countdown expired, which is a decision: continue.
@@ -268,7 +278,7 @@ function requireSeries(seriesId: string | null | undefined): string {
  * A gate exists to judge work that has already been done. Before the first
  * stage there is nothing to judge, so there is no gate.
  */
-function previousStage(stage: RunStage): RunStage | null {
+export function previousStage(stage: RunStage): RunStage | null {
   const order: RunStage[] = ['bible', 'cast', 'script', 'storyboard', 'shots', 'assemble', 'done'];
   const index = order.indexOf(stage);
   return index > 0 ? (order[index - 1] ?? null) : null;

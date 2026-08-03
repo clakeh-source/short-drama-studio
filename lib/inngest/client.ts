@@ -1,4 +1,5 @@
 import { EventSchemas, Inngest } from 'inngest';
+import type { RunStage } from '@/lib/db/schema';
 
 /**
  * Typed event catalogue.
@@ -58,7 +59,17 @@ export type Events = {
    * rather than blocking.
    */
   'run/gate.resolved': {
-    data: { userId: string; runId: string; action: 'continue' | 'stop' };
+    /**
+     * `stage` names the gate being answered, and the supervisor matches on it.
+     * Without it every gate in a run listened for the same event, so one
+     * decision could resolve a later gate it was never about.
+     */
+    data: {
+      userId: string;
+      runId: string;
+      stage: RunStage;
+      action: 'continue' | 'stop';
+    };
   };
 
   /** Assemble an episode's finished clips into a single MP4. */
