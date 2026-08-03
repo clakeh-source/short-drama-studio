@@ -18,6 +18,7 @@
     "db:buckets": "node scripts/create-buckets.mjs",
     "db:seed": "node scripts/seed.mjs",
     "orphans": "node scripts/orphans.mjs",
+    "recast:voices": "tsx scripts/recast-voices.mts",
     "inngest:dev": "npx --yes inngest-cli@latest dev -u http://localhost:3000/api/inngest",
     "db:migrate": "drizzle-kit migrate",
     "shotstack:batch": "node scripts/shotstack/render-batch.mjs",
