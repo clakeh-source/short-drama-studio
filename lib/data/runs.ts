@@ -1,8 +1,8 @@
 import 'server-only';
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, withUserDb } from '@/lib/db';
-import { runs, scenes, shots, usageLog } from '@/lib/db/schema';
+import { assets, runs, scenes, shots, usageLog } from '@/lib/db/schema';
 import type { Run, RunStage, RunStatus } from '@/lib/db/schema';
 import { notFound } from '@/lib/api/handler';
 
@@ -149,7 +149,18 @@ export async function refreshSpend(runId: string): Promise<number> {
 export interface RunProgress {
   shotsTotal: number;
   shotsReady: number;
+  /** Shots with no usable clip. These are the ones that cost you a beat. */
   shotsFailed: number;
+  /**
+   * Shots that have a clip but lost their line of dialogue.
+   *
+   * Counted apart from `shotsFailed` because the difference is the whole film.
+   * A shot with a ready clip and a failed voice still plays — the assembly
+   * includes it, silent — so calling it "failed" reports a hole in the film
+   * that is not there. It is worth surfacing, because a missing line is a real
+   * loss; it is not worth reporting as a missing shot.
+   */
+  shotsMissingAudio: number;
   /** True once no shot is still queued or generating. */
   settled: boolean;
 }
@@ -164,18 +175,61 @@ export interface RunProgress {
  */
 export async function shotProgress(episodeId: string): Promise<RunProgress> {
   const rows = await db()
-    .select({ status: shots.status })
+    .select({ id: shots.id, status: shots.status, version: shots.version })
     .from(shots)
     .innerJoin(scenes, eq(scenes.id, shots.sceneId))
     .where(eq(scenes.episodeId, episodeId));
 
   const ready = rows.filter((r) => r.status === 'ready').length;
-  const failed = rows.filter((r) => r.status === 'failed').length;
+  const failedRows = rows.filter((r) => r.status === 'failed');
+
+  /**
+   * Which of the failures still have a picture.
+   *
+   * `shots.status` is `failed` when *any* required asset failed, which is the
+   * right rule for readiness — the render gate must not call an episode
+   * finished while a line is missing. It is the wrong rule for a progress
+   * counter, because it reports a shot that will appear in the film exactly
+   * like one that will not. Only the clip decides whether the beat survives:
+   * `buildEpisodeTimeline` blocks on a missing video and lets a null voice
+   * through as silence.
+   */
+  const withClip =
+    failedRows.length === 0
+      ? new Set<string>()
+      : new Set(
+          (
+            await db()
+              .select({ shotId: assets.shotId })
+              .from(assets)
+              .innerJoin(shots, eq(shots.id, assets.shotId))
+              .where(
+                and(
+                  inArray(
+                    assets.shotId,
+                    failedRows.map((r) => r.id),
+                  ),
+                  eq(assets.kind, 'video'),
+                  eq(assets.status, 'ready'),
+                  // The current take only: an old ready clip from a superseded
+                  // version is not what this film would play.
+                  eq(assets.version, shots.version),
+                ),
+              )
+          )
+            .map((r) => r.shotId)
+            .filter((id): id is string => Boolean(id)),
+        );
+
+  const missingAudio = failedRows.filter((r) => withClip.has(r.id)).length;
 
   return {
     shotsTotal: rows.length,
     shotsReady: ready,
-    shotsFailed: failed,
-    settled: rows.length > 0 && ready + failed === rows.length,
+    shotsFailed: failedRows.length - missingAudio,
+    shotsMissingAudio: missingAudio,
+    // Settled is about work stopping, not about it succeeding: both kinds of
+    // failure are terminal, so both end the wait.
+    settled: rows.length > 0 && ready + failedRows.length === rows.length,
   };
 }

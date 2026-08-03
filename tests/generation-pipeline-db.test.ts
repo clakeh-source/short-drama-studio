@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { closeDb, db } from '@/lib/db';
 import {
   assets,
@@ -10,6 +10,7 @@ import {
   series,
   shots,
 } from '@/lib/db/schema';
+import { shotProgress } from '@/lib/data/runs';
 import {
   claimVideoSlot,
   KEEP_SHOT_VERSIONS,
@@ -512,6 +513,70 @@ describe.skipIf(!hasDatabase)('the generation pipeline, against the database', (
       expect(await reconcileShotStatus(shotId)).toBe('ready');
     });
   });
+
+  /* -- progress reporting ------------------------------------------------ */
+
+  describe('a missing line is not a missing shot', () => {
+    /**
+     * `shots.status` goes `failed` when any required asset failed, which is the
+     * right rule for the render gate and the wrong one for a progress counter:
+     * a shot with a good clip and a failed voice still appears in the film,
+     * silent, because `buildEpisodeTimeline` blocks only on a missing video.
+     * Counting it as a failure reported a hole that was not there.
+     */
+    async function markShot(
+      shotId: string,
+      video: 'ready' | 'failed',
+      voice: 'ready' | 'failed',
+    ): Promise<void> {
+      for (const [kind, status] of [
+        ['video', video],
+        ['voice', voice],
+      ] as const) {
+        const row = await upsertAsset({
+          shotId,
+          episodeId,
+          kind,
+          provider: 'stub',
+          attempt: 0,
+          version: 1,
+        });
+        await db()
+          .update(assets)
+          .set({ status, storagePath: status === 'ready' ? `clips/${row.id}.mp4` : null })
+          .where(eq(assets.id, row.id));
+      }
+      await db().update(shots).set({ status: 'failed' }).where(eq(shots.id, shotId));
+    }
+
+    it('separates a lost clip from a lost line', async () => {
+      const ids = await freshBoard(3);
+      await db().update(shots).set({ status: 'ready' }).where(eq(shots.id, ids[0]!));
+      // Clip fine, voice gone: still in the film.
+      await markShot(ids[1]!, 'ready', 'failed');
+      // No clip at all: a genuine hole.
+      await markShot(ids[2]!, 'failed', 'failed');
+
+      const progress = await shotProgress(episodeId);
+
+      expect(progress.shotsTotal).toBe(3);
+      expect(progress.shotsMissingAudio).toBe(1);
+      expect(progress.shotsFailed).toBe(1);
+      // Both kinds are terminal, so the run stops waiting either way.
+      expect(progress.settled).toBe(true);
+    });
+
+    it('reports nothing missing when every shot is whole', async () => {
+      const ids = await freshBoard(2);
+      await db().update(shots).set({ status: 'ready' }).where(inArray(shots.id, ids));
+
+      const progress = await shotProgress(episodeId);
+
+      expect(progress.shotsReady).toBe(2);
+      expect(progress.shotsFailed).toBe(0);
+      expect(progress.shotsMissingAudio).toBe(0);
+    });
+  });
 });
 
 describe.skipIf(hasDatabase)('generation pipeline suite', () => {
@@ -519,4 +584,5 @@ describe.skipIf(hasDatabase)('generation pipeline suite', () => {
     console.warn('Skipped: set DATABASE_URL and run `pnpm db:migrate` to execute these.');
     expect(hasDatabase).toBe(false);
   });
+
 });

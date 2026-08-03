@@ -95,7 +95,13 @@ interface RunState {
   stageIndex: number;
   stageCount: number;
   gateSecondsRemaining: number | null;
-  progress: { shotsTotal: number; shotsReady: number; shotsFailed: number; settled: boolean } | null;
+  progress: {
+    shotsTotal: number;
+    shotsReady: number;
+    shotsFailed: number;
+    shotsMissingAudio: number;
+    settled: boolean;
+  } | null;
   tree: ReviewTree | null;
 }
 
@@ -453,8 +459,21 @@ export function RunWorkspace({ initialRunId }: { initialRunId: string | null }) 
                   </span>
                   {stage === 'shots' && progress && progress.shotsTotal > 0 ? (
                     <span className="text-xs text-muted-foreground">
-                      {progress.shotsReady}/{progress.shotsTotal} shots
-                      {progress.shotsFailed > 0 ? ` · ${progress.shotsFailed} failed` : ''}
+                      {/*
+                        Two different losses, said differently. A shot with no
+                        clip is a hole in the film; a shot that merely lost its
+                        line still plays, silent, and the assembly includes it.
+                        Reporting both as "failed" describes damage that is not
+                        there — and sends whoever reads it looking for missing
+                        footage that was never missing.
+                      */}
+                      {progress.shotsReady + progress.shotsMissingAudio}/{progress.shotsTotal} shots
+                      {progress.shotsFailed > 0 ? (
+                        <span className="text-destructive"> · {progress.shotsFailed} failed</span>
+                      ) : null}
+                      {progress.shotsMissingAudio > 0
+                        ? ` · ${progress.shotsMissingAudio} without dialogue`
+                        : ''}
                     </span>
                   ) : null}
                 </li>
