@@ -71,7 +71,10 @@ const eslintConfig = [
   },
   {
     // Client components must never touch server-only env or the db.
-    files: ['components/**/*.tsx'],
+    // `.ts` as well as `.tsx`: the hooks and helpers that components import —
+    // use-generation.ts, use-shot-shortcuts.ts — are client code too, and were
+    // outside the guard while every rule it enforces still applied to them.
+    files: ['components/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-imports': [
         'error',
