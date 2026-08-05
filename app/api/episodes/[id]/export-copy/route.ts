@@ -36,3 +36,14 @@ export const POST = dynamicRoute<{ id: string }>(
     return { ...result.data, costCents: result.usage.costCents };
   },
 );
+
+/**
+ * Short — one caption and a handful of hashtags — but still a blocking model
+ * call, and a schema retry doubles it. Vercel's 15s Pro default is close enough
+ * to bite, and the failure is worse than a slow response: Anthropic has already
+ * billed the call by the time the function is killed, and `recordUsage` above
+ * never runs, so the charge lands outside the ledger and outside the spend cap.
+ *
+ * 60s is generous for a caption and still fails fast if the provider hangs.
+ */
+export const maxDuration = 60;
