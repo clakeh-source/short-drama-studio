@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { LlmGenerateInput, LlmProvider, LlmStreamChunk, LlmUsage } from '../types';
-import { ProviderRequestError, TokenBudgetError } from '../types';
+import { configurationError, ProviderRequestError, TokenBudgetError } from '../types';
 
 /**
  * The one file in the codebase allowed to import @anthropic-ai/sdk.
@@ -35,18 +35,40 @@ export class AnthropicLlmProvider implements LlmProvider {
   readonly id = 'anthropic';
   readonly model: string;
 
-  #client: Anthropic;
+  #client: Anthropic | null = null;
 
   constructor() {
+    this.model = process.env.ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-6';
+  }
+
+  /**
+   * The SDK client, built on first use rather than in the constructor.
+   *
+   * Constructing an adapter must not require its credentials. The registry's
+   * factories are already lazy for that reason, but the laziness stopped at the
+   * factory: naming this provider was enough to throw. `describe.skipIf` still
+   * *executes* its callback to collect the tests inside it, so the live suite in
+   * tests/live-anthropic.test.ts — which resolves the provider there — failed to
+   * collect on any clone without a key, and took `pnpm test` down with it. The
+   * ElevenLabs and Replicate adapters read their tokens at the point of use and
+   * never had the problem; this now matches them.
+   *
+   * `configurationError` rather than a bare Error for the same reason those two
+   * use it: no amount of retrying sets an environment variable, so lib/ai/json.ts
+   * rethrows it immediately instead of paying for three more identical attempts.
+   */
+  #anthropic(): Anthropic {
+    if (this.#client) return this.#client;
+
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
-      throw new Error(
+      throw configurationError(
         'ANTHROPIC_API_KEY is not set. Set it in .env.local, or set the provider to `stub` for local development.',
       );
     }
 
-    this.model = process.env.ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-6';
     this.#client = new Anthropic({ apiKey });
+    return this.#client;
   }
 
   estimateCostCents(input: LlmGenerateInput): number {
@@ -57,7 +79,7 @@ export class AnthropicLlmProvider implements LlmProvider {
   }
 
   async *stream(input: LlmGenerateInput): AsyncGenerator<LlmStreamChunk, LlmUsage, void> {
-    const stream = this.#client.messages.stream({
+    const stream = this.#anthropic().messages.stream({
       model: this.model,
       max_tokens: input.maxTokens,
       system: input.system,
