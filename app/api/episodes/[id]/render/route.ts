@@ -1,5 +1,6 @@
 import { badRequest, dynamicRoute, paymentRequired } from '@/lib/api/handler';
 import { activeRender, buildEpisodeTimeline, listRenders } from '@/lib/data/render';
+import { loadEpisode } from '@/lib/data/series';
 import { episodeRenderEventId, inngest } from '@/lib/inngest/client';
 import { getRenderProvider } from '@/lib/providers';
 import { checkSpend } from '@/lib/spend';
@@ -15,6 +16,22 @@ import { checkSpend } from '@/lib/spend';
 export const POST = dynamicRoute<{ id: string }>(
   { operation: 'episode.render' },
   async ({ params, user }) => {
+    /**
+     * Ownership first, and only then anything else.
+     *
+     * `activeRender` reads through the privileged handle and takes no user id —
+     * it is written for the job side, where there is no session to read through.
+     * Asking it first meant `POST /api/episodes/<someone-else's-id>/render`
+     * answered "a render is already running", with their render's id in the
+     * body: a small cross-tenant answer from an endpoint that should have none.
+     *
+     * `loadEpisode` reads through RLS and throws 404 on anything the caller does
+     * not own, which is the cheapest way to establish that here — the timeline
+     * build below would also do it, but it signs a URL per asset first, and the
+     * double-click path should not pay for that to be told to stand down.
+     */
+    await loadEpisode(user.id, params.id);
+
     const inFlight = await activeRender(params.id);
     if (inFlight) {
       return {

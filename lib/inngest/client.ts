@@ -1,5 +1,7 @@
 import { EventSchemas, Inngest } from 'inngest';
 
+import { inngestIsDev } from './mode';
+
 /**
  * Typed event catalogue.
  *
@@ -62,6 +64,13 @@ export const inngest = new Inngest({
   id: 'short-drama-studio',
   schemas: new EventSchemas().fromRecord<Events>(),
   eventKey: process.env.INNGEST_EVENT_KEY,
+  /**
+   * Stated, not inferred. The SDK decides whether to verify the signature on
+   * every request to /api/inngest from this mode, and left to itself it reads
+   * an unrecognised environment as dev — which skips verification entirely. See
+   * `inngestIsDev`.
+   */
+  isDev: inngestIsDev(),
 });
 
 /* -------------------------------------------------------------------------- */

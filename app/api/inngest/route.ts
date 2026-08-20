@@ -2,6 +2,12 @@ import { serve } from 'inngest/next';
 import { inngest } from '@/lib/inngest/client';
 import { functions } from '@/lib/inngest/functions';
 
+/**
+ * Signature verification is what makes this public endpoint safe to expose, and
+ * whether the SDK performs it at all depends on the client's mode — stated in
+ * lib/inngest/client.ts rather than inferred. lib/env.ts refuses to start
+ * without a signing key anywhere that mode is not dev.
+ */
 export const { GET, POST, PUT } = serve({
   client: inngest,
   functions,

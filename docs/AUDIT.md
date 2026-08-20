@@ -4,17 +4,17 @@ Scope: the whole application as of `fceffd3` — 18.7k lines across `app/`, `com
 `lib/` and `scripts/`. Focus on the security boundaries (auth, tenancy, secrets), the
 spend controls, and the correctness of the job pipeline.
 
-F1 and F4 have since been fixed in this branch; each carries a note saying how.
-Everything else is a read of the code as it stands.
+F1 through F4 have since been fixed in this branch; each carries a note saying how.
+F5 is a read of the code as it stands.
 
 ## Health check
 
-| Check | At `fceffd3` | After the F1/F4 fixes |
+| Check | At `fceffd3` | After the fixes |
 | --- | --- | --- |
 | `pnpm typecheck` | clean | clean |
 | `pnpm lint` | clean | clean |
 | `pnpm build` | passes | passes |
-| `pnpm test` | 332 passed, 50 skipped, **1 suite fails to collect** (see F4) | 344 passed, 57 skipped, 0 failed |
+| `pnpm test` | 332 passed, 50 skipped, **1 suite fails to collect** (see F4) | 354 passed, 57 skipped, 0 failed |
 
 ## What holds up well
 
@@ -79,7 +79,7 @@ reaches the user unchanged.
 A corrective retry inside `streamJson` can still carry one generation past the cap by a
 single attempt — the same latitude a video job that is already running gets.
 
-### F2 — `/api/inngest` fails open outside recognised production environments (medium)
+### F2 — `/api/inngest` fails open outside recognised production environments (medium) — fixed
 
 `INNGEST_SIGNING_KEY` is `.optional()` in `lib/env.ts:51`, and `/api/inngest` is on the
 middleware's `PUBLIC_PATHS` allowlist, so nothing in this repo requires it to be set.
@@ -97,10 +97,21 @@ RLS-bypassing `db()` handle with `userId` taken from the event body. Ownership i
 re-verified per shot (`loadShotForJob`), which limits the blast radius considerably, but an
 unauthenticated caller can still drive the pipeline and the provider spend that goes with it.
 
-Fix: require `INNGEST_SIGNING_KEY` when `NODE_ENV === 'production'` in the env schema, and
-pass `isDev: false` / an explicit mode to `serve()` rather than relying on inference.
+**Fixed.** The polarity is now inverted and stated rather than inferred.
+`lib/inngest/mode.ts` answers "is this a dev machine?" — true only for `NODE_ENV=development`
+(what `next dev` sets, so the documented local workflow needs no extra configuration) or an
+explicit `INNGEST_DEV=1`. Everything else, recognised or not, is cloud. The Inngest client
+passes that as `isDev`, which the SDK treats as an explicit mode and stops guessing from
+platform variables; `lib/env.ts` then refuses to hand out an environment at all when the
+mode is not dev and `INNGEST_SIGNING_KEY` is unset, so a misconfigured deployment says which
+variable is missing instead of quietly accepting unsigned POSTs.
 
-### F3 — `POST /api/episodes/[id]/render` answers about episodes the caller does not own (low-medium)
+One consequence worth knowing: an environment that used to be *guessed* as dev now needs
+`INNGEST_EVENT_KEY` too, because the SDK requires one to send events in cloud mode. That is
+a loud failure naming the variable, where the old behaviour was to post events at a local
+dev server that was not there.
+
+### F3 — `POST /api/episodes/[id]/render` answers about episodes the caller does not own (low-medium) — fixed
 
 `app/api/episodes/[id]/render/route.ts:18` calls `activeRender(params.id)` — which uses the
 privileged `db()` handle and takes no `userId` — *before* `buildEpisodeTimeline` does the
@@ -113,8 +124,13 @@ gets:
 
 An attacker needs a victim's episode UUID to exploit it, and gets back only a render UUID
 and the existence of an in-flight render — but it is a cross-tenant answer from an endpoint
-that is supposed to have none. Moving the `activeRender` call below `buildEpisodeTimeline`
-fixes it with no behaviour change for legitimate callers.
+that is supposed to have none.
+
+**Fixed.** The route now calls `loadEpisode(user.id, params.id)` first, which reads through
+RLS and 404s on anything the caller does not own. That rather than simply hoisting
+`buildEpisodeTimeline`: the timeline build establishes ownership too, but signs a URL per
+asset on the way, and the double-click path should not pay for that just to be told a render
+is already running.
 
 ### F4 — `pnpm test` is red on a clean checkout (low) — fixed
 
@@ -169,6 +185,5 @@ it is worth converting the next time it is touched.
 
 ## Suggested order
 
-1. ~~F1~~ and ~~F4~~ — done in this branch.
-2. F3, then F2 — both are small, bounded diffs.
-3. F5 — batch them.
+1. ~~F1~~, ~~F2~~, ~~F3~~, ~~F4~~ — done in this branch.
+2. F5 — batch them.

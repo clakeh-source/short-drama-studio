@@ -1,5 +1,6 @@
 import 'server-only';
 import { z } from 'zod';
+import { inngestIsDev } from '@/lib/inngest/mode';
 
 /**
  * Server-side environment. Validated lazily (on first access) rather than at
@@ -51,6 +52,27 @@ const serverEnvSchema = z.object({
   INNGEST_SIGNING_KEY: z.string().optional(),
 
   MAX_MONTHLY_SPEND_CENTS: z.coerce.number().int().positive().default(2000),
+}).superRefine((value, ctx) => {
+  /**
+   * Outside a dev machine, the signing key is not optional.
+   *
+   * /api/inngest has to be publicly reachable and it invokes the job functions,
+   * which act on the RLS-bypassing database handle. The signature is the only
+   * thing establishing that a request came from Inngest, and the SDK cannot
+   * check one without this key — it answers 500 instead, so the endpoint fails
+   * closed either way. Failing here means it fails *legibly*, at the first
+   * request, naming the variable, rather than as an opaque error inside a
+   * webhook nobody is watching.
+   */
+  if (!inngestIsDev() && !value.INNGEST_SIGNING_KEY) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['INNGEST_SIGNING_KEY'],
+      message:
+        'required outside local development — /api/inngest cannot verify request ' +
+        'signatures without it. Set INNGEST_DEV=1 if this really is a dev machine.',
+    });
+  }
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
