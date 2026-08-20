@@ -114,3 +114,12 @@ export const DELETE = dynamicRoute<{ id: string }>(
     return { removed: true };
   },
 );
+
+/**
+ * Covers the POST: a 20 MB upload (the ceiling above) has to arrive over the
+ * user's uplink and then be pushed on to Supabase Storage. At a typical 5 Mbps
+ * that is past Vercel's 15s Pro default before the second leg even starts, and a
+ * connection slower than that multiplies it. Killing the request after the user
+ * has already waited saves nothing — the bytes were spent either way.
+ */
+export const maxDuration = 300;

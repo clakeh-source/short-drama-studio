@@ -1,6 +1,15 @@
-import type { LlmProvider, RenderProvider, TtsProvider, VideoProvider } from './types';
+import type {
+  ImageProvider,
+  LlmProvider,
+  RenderProvider,
+  TtsProvider,
+  VideoProvider,
+} from './types';
 import { AnthropicLlmProvider } from './anthropic/llm';
 import { ElevenLabsTtsProvider } from './elevenlabs/tts';
+import { FalImageProvider } from './fal/image';
+import { FalVideoProvider } from './fal/video';
+import { StubImageProvider } from './stub/image';
 import { FfmpegRenderProvider } from './ffmpeg/render';
 import { ReplicateVideoProvider } from './replicate/video';
 import { ShotstackRenderProvider } from './shotstack/render';
@@ -25,6 +34,12 @@ const llmRegistry: Record<string, () => LlmProvider> = {
 const videoRegistry: Record<string, () => VideoProvider> = {
   stub: () => new StubVideoProvider(),
   replicate: () => new ReplicateVideoProvider(),
+  fal: () => new FalVideoProvider(),
+};
+
+const imageRegistry: Record<string, () => ImageProvider> = {
+  stub: () => new StubImageProvider(),
+  fal: () => new FalImageProvider(),
 };
 
 const ttsRegistry: Record<string, () => TtsProvider> = {
@@ -66,6 +81,15 @@ export function getVideoProvider(id = process.env.VIDEO_PROVIDER): VideoProvider
   return resolve(videoRegistry, id, 'VIDEO_PROVIDER');
 }
 
+/**
+ * Defaults to `fal` when a key is present and `stub` otherwise, matching the
+ * LLM's rule: a fresh clone with no credentials still runs the whole pipeline.
+ */
+export function getImageProvider(id = process.env.IMAGE_PROVIDER): ImageProvider {
+  const fallback = process.env.FAL_KEY ? 'fal' : 'stub';
+  return resolve(imageRegistry, id?.trim() || fallback, 'IMAGE_PROVIDER');
+}
+
 export function getTtsProvider(id = process.env.TTS_PROVIDER): TtsProvider {
   return resolve(ttsRegistry, id, 'TTS_PROVIDER');
 }
@@ -77,12 +101,14 @@ export function getRenderProvider(id = process.env.RENDER_PROVIDER): RenderProvi
 export function registeredProviderIds(): {
   llm: string[];
   video: string[];
+  image: string[];
   tts: string[];
   render: string[];
 } {
   return {
     llm: Object.keys(llmRegistry),
     video: Object.keys(videoRegistry),
+    image: Object.keys(imageRegistry),
     tts: Object.keys(ttsRegistry),
     render: Object.keys(renderRegistry),
   };

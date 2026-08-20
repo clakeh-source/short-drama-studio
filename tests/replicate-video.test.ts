@@ -131,10 +131,26 @@ describe('request shape', () => {
     process.env.REPLICATE_VIDEO_IMAGE_INPUT = 'start_image';
     const { body } = new ReplicateVideoProvider().buildRequest({
       ...input,
-      referenceImageUrl: 'https://example.test/face.png',
+      referenceImageUrls: ['https://example.test/face.png'],
     });
 
     expect(body.input).toMatchObject({ start_image: 'https://example.test/face.png' });
+  });
+
+  it('sends the first of several reference stills, since the model takes one', () => {
+    const { body } = new ReplicateVideoProvider().buildRequest({
+      ...input,
+      referenceImageUrls: ['https://example.test/a.png', 'https://example.test/b.png'],
+    });
+
+    expect(body.input).toMatchObject({ image: 'https://example.test/a.png' });
+  });
+
+  it('omits the image field entirely when there are no reference stills', () => {
+    // The difference between an image-to-video call and a text-to-video one.
+    const { body } = new ReplicateVideoProvider().buildRequest({ ...input, referenceImageUrls: [] });
+
+    expect(body.input).not.toHaveProperty('image');
   });
 
   it('rejects malformed extra input rather than dropping it', () => {

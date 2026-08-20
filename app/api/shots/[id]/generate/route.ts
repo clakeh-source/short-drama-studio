@@ -32,14 +32,17 @@ export const POST = dynamicRoute<{ id: string }>(
         throw badRequest('This shot has no video prompt. Regenerate the storyboard.');
       }
 
-      // A retry is a new attempt; a first run keeps attempt 0.
-      const attempt = shot.status === 'failed' || shot.status === 'ready' ? shot.retryCount + 1 : shot.retryCount;
+      // A retry is a new attempt; a first run keeps attempt 0. The *version* is
+      // untouched either way — retrying is another go at the same take, and
+      // only /regenerate starts a new one.
+      const attempt =
+        shot.status === 'failed' || shot.status === 'ready' ? shot.retryCount + 1 : shot.retryCount;
 
       if (attempt !== shot.retryCount) {
         await tx.update(shots).set({ retryCount: attempt }).where(eq(shots.id, params.id));
       }
 
-      return { shot, episodeId: scene.episodeId, attempt };
+      return { shot, episodeId: scene.episodeId, attempt, version: shot.version };
     });
 
     // Confirms the episode belongs to this user, and gives us the series id.
@@ -59,13 +62,15 @@ export const POST = dynamicRoute<{ id: string }>(
 
     const { ids } = await inngest.send([
       {
-        id: shotVideoEventId(params.id, prepared.attempt),
+        id: shotVideoEventId(params.id, prepared.attempt, prepared.version),
         name: 'shot/video.requested',
         data: {
           userId: user.id,
+          seriesId: series.id,
           episodeId: episode.id,
           shotId: params.id,
           attempt: prepared.attempt,
+          version: prepared.version,
         },
       },
       ...(hasDialogue
@@ -87,6 +92,7 @@ export const POST = dynamicRoute<{ id: string }>(
     return {
       queued: true,
       attempt: prepared.attempt,
+      version: prepared.version,
       eventIds: ids,
       estimateCents: estimate.totalCents,
       seriesId: series.id,

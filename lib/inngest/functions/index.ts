@@ -1,3 +1,4 @@
+import { autorun } from './autorun';
 import { helloWorld } from './hello-world';
 import { generateEpisodeAssets } from './generate-episode';
 import { generateShotVideo } from './generate-shot-video';
@@ -6,6 +7,7 @@ import { renderEpisode } from './render-episode';
 
 /** Every Inngest function must be listed here to be served by /api/inngest. */
 export const functions = [
+  autorun,
   helloWorld,
   generateEpisodeAssets,
   generateShotVideo,

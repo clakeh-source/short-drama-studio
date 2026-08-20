@@ -1,0 +1,322 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { inflateSync } from 'node:zlib';
+import {
+  FalImageProvider,
+  identityCapacity,
+  identityModel,
+  imageModel,
+  knownCapacityFor,
+  modelFor,
+} from '@/lib/providers/fal/image';
+import { StubImageProvider } from '@/lib/providers/stub/image';
+import type { ImageGenInput } from '@/lib/providers';
+
+/**
+ * Identity-preserving character stills.
+ *
+ * The thing worth guarding is not that a reference *can* be sent — it is that a
+ * reference sent to the wrong model, or under the wrong field name, is
+ * **silently ignored**. The images still come back, the set still looks
+ * plausible in a thumbnail strip, and the drift only shows up thirty clips
+ * later. So these assert the request body and the model choice, not just that a
+ * call succeeded.
+ */
+
+const base: ImageGenInput = {
+  prompt: 'East Asian woman in her early thirties, sharp jaw, olive canvas jacket',
+  count: 1,
+  aspectRatio: '9:16',
+};
+
+const FACE = 'https://storage.test/mei/hero.png';
+const originalEnv = { ...process.env };
+
+beforeEach(() => {
+  process.env.FAL_KEY = 'fal-test-key';
+  delete process.env.FAL_IMAGE_MODEL;
+  delete process.env.FAL_IMAGE_IDENTITY_MODEL;
+  delete process.env.FAL_IMAGE_COST_CENTS;
+  delete process.env.FAL_IMAGE_IDENTITY_COST_CENTS;
+  delete process.env.FAL_IMAGE_IDENTITY_CAPACITY;
+});
+
+afterEach(() => {
+  process.env = { ...originalEnv };
+});
+
+describe('choosing the model', () => {
+  it('uses the plain text-to-image model with no reference face', () => {
+    const request = new FalImageProvider().buildRequest(base);
+
+    expect(request.identity).toBe(false);
+    expect(request.model).toBe(imageModel());
+    // Absent, not undefined: a model that validates its inputs refuses the
+    // latter.
+    expect(request.body).not.toHaveProperty('reference_image_url');
+    expect(request.body).not.toHaveProperty('image_url');
+  });
+
+  it('switches to the identity model when a face is supplied', () => {
+    const request = new FalImageProvider().buildRequest({ ...base, identityImageUrls: [FACE] });
+
+    expect(request.identity).toBe(true);
+    expect(request.model).toBe(identityModel());
+    expect(request.model).not.toBe(imageModel());
+  });
+
+  it('sends the face under both field names the models use', () => {
+    // PuLID calls it `reference_image_url`; InstantID and IP-Adapter FaceID call
+    // it `image_url`. Getting the name wrong drops the reference in silence.
+    const { body } = new FalImageProvider().buildRequest({ ...base, identityImageUrls: [FACE] });
+
+    expect(body.reference_image_url).toBe(FACE);
+    expect(body.image_url).toBe(FACE);
+  });
+
+  it('keeps the prompt, which is what still varies the pose', () => {
+    // The face comes from the reference and everything else from the prompt —
+    // if the prompt were dropped, every still would be the hero again.
+    const { body } = new FalImageProvider().buildRequest({
+      ...base,
+      prompt: 'three-quarter view, turned away',
+      identityImageUrls: [FACE],
+    });
+
+    expect(body.prompt).toBe('three-quarter view, turned away');
+  });
+
+  it('treats a blank reference as no reference', () => {
+    expect(modelFor({ identityImageUrls: ['   '] }).identity).toBe(false);
+    expect(modelFor({ identityImageUrls: undefined }).identity).toBe(false);
+    expect(modelFor({ identityImageUrls: [FACE] }).identity).toBe(true);
+  });
+
+  it('honours a configured identity model', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/instant-id';
+    const request = new FalImageProvider().buildRequest({ ...base, identityImageUrls: [FACE] });
+    expect(request.model).toBe('fal-ai/instant-id');
+  });
+});
+
+describe('cost', () => {
+  it('prices identity generation above plain generation', () => {
+    const provider = new FalImageProvider();
+
+    const plain = provider.estimateCostCents({ ...base, count: 3 });
+    const identity = provider.estimateCostCents({ ...base, count: 3, identityImageUrls: [FACE] });
+
+    // A face encoder on top of the base model is not free, and quoting the
+    // cheaper number would under-report every cast the autorun draws.
+    expect(identity).toBeGreaterThan(plain);
+  });
+
+  it('takes a configured identity rate', () => {
+    process.env.FAL_IMAGE_IDENTITY_COST_CENTS = '9';
+    expect(
+      new FalImageProvider().estimateCostCents({ ...base, count: 2, identityImageUrls: [FACE] }),
+    ).toBe(18);
+  });
+
+  it('refuses a nonsense rate rather than silently mispricing', () => {
+    process.env.FAL_IMAGE_IDENTITY_COST_CENTS = 'free';
+    expect(() =>
+      new FalImageProvider().estimateCostCents({ ...base, identityImageUrls: [FACE] }),
+    ).toThrow(/FAL_IMAGE_IDENTITY_COST_CENTS/);
+  });
+});
+
+describe('capability', () => {
+  it('is declared by every provider', () => {
+    // Callers branch on this to degrade deliberately rather than passing a
+    // reference into a model that ignores it.
+    expect(new FalImageProvider().supportsIdentity).toBe(true);
+    expect(new StubImageProvider().supportsIdentity).toBe(true);
+  });
+});
+
+describe('identity capacity', () => {
+  it('defaults to one face', () => {
+    delete process.env.FAL_IMAGE_IDENTITY_CAPACITY;
+    expect(identityCapacity()).toBe(1);
+  });
+
+  it('knows the single-identity models', () => {
+    // These encode one face by construction. Anything claiming otherwise about
+    // them is a configuration error, not a capability.
+    expect(knownCapacityFor('fal-ai/flux-pulid')).toBe(1);
+    expect(knownCapacityFor('fal-ai/instant-id')).toBe(1);
+    expect(knownCapacityFor('fal-ai/ip-adapter-face-id')).toBe(1);
+  });
+
+  it('clamps a capacity the configured model cannot honour', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/flux-pulid';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    // Asking for four faces from a one-face model does not give you four faces.
+    // It gives you one face and a wrong number in the asset row, which is worse
+    // than not asking — so the setting is clamped rather than believed.
+    expect(identityCapacity()).toBe(1);
+  });
+
+  it('knows the multi-identity model the app ships pointed at', () => {
+    // Verified against fal's own OpenAPI schema for the endpoint, which lists
+    // `image_urls` as a required array. This is the one model in the list that
+    // makes a capacity above 1 mean anything.
+    expect(knownCapacityFor('fal-ai/flux-pro/kontext/max/multi')).toBe(4);
+  });
+
+  it('does not mistake single-subject models for multi-identity ones', () => {
+    // PhotoMaker takes a zip of photos of *one* person; MiniMax's
+    // subject-reference endpoint takes a single `image_url`. Both look like they
+    // might read a set, and neither does.
+    expect(knownCapacityFor('fal-ai/photomaker')).toBe(1);
+    expect(knownCapacityFor('fal-ai/minimax/image-01/subject-reference')).toBe(1);
+  });
+
+  it('sends kontext the field it requires', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/flux-pro/kontext/max/multi';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    const faces = ['mei.png', 'daniel.png'];
+    const { body, facesUsed } = new FalImageProvider().buildRequest({
+      ...base,
+      identityImageUrls: faces,
+    });
+
+    // `image_urls` is required by this endpoint, not optional — omitting it is a
+    // 422, and sending only the scalar would compose the shot from one face.
+    expect(facesUsed).toBe(2);
+    expect(body.image_urls).toEqual(faces);
+    expect(body.reference_image_urls).toEqual(faces);
+  });
+
+  it('leaves the multi-face fields off a single-face request', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/flux-pro/kontext/max/multi';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    // One character in the shot is the common case; the scalar forms are what
+    // every single-identity model reads, so they stay the baseline.
+    const { body } = new FalImageProvider().buildRequest({ ...base, identityImageUrls: [FACE] });
+
+    expect(body.image_url).toBe(FACE);
+    expect(body).not.toHaveProperty('image_urls');
+  });
+
+  it('honours the capacity for a model it does not recognise', () => {
+    // Refusing unknown models would make every new one unusable until this list
+    // learned about it. Trust, having warned about the ones we do know.
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'someone/multi-identity-v2';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    expect(knownCapacityFor('someone/multi-identity-v2')).toBeNull();
+    expect(identityCapacity()).toBe(4);
+  });
+
+  it('only sends as many faces as will be read', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'fal-ai/flux-pulid';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    const faces = ['a.png', 'b.png', 'c.png', 'd.png'];
+    const { body, facesUsed } = new FalImageProvider().buildRequest({
+      ...base,
+      identityImageUrls: faces,
+    });
+
+    expect(facesUsed).toBe(1);
+    expect(body.reference_image_url).toBe('a.png');
+    // No multi-face field, because this model would ignore it and its presence
+    // would suggest otherwise to anyone reading the request.
+    expect(body).not.toHaveProperty('reference_image_urls');
+  });
+
+  it('sends the whole set to a model that reads it', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'someone/multi-identity-v2';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '4';
+
+    const faces = ['a.png', 'b.png', 'c.png', 'd.png'];
+    const { body, facesUsed } = new FalImageProvider().buildRequest({
+      ...base,
+      identityImageUrls: faces,
+    });
+
+    // Four characters in one keyframe: the two-hander actually locked.
+    expect(facesUsed).toBe(4);
+    expect(body.reference_image_urls).toEqual(faces);
+    // Ordered, so a single-identity fallback still gets the lead.
+    expect(body.reference_image_url).toBe('a.png');
+  });
+
+  it('never exceeds four, whatever is configured', () => {
+    process.env.FAL_IMAGE_IDENTITY_MODEL = 'someone/multi-identity-v2';
+    process.env.FAL_IMAGE_IDENTITY_CAPACITY = '99';
+    expect(identityCapacity()).toBe(4);
+  });
+});
+
+describe('the stub propagates identity', () => {
+  it('gives images conditioned on the same face a shared channel', async () => {
+    const provider = new StubImageProvider();
+
+    const a = await provider.generate({ ...base, prompt: 'front view', identityImageUrls: [FACE] });
+    const b = await provider.generate({ ...base, prompt: 'side view', identityImageUrls: [FACE] });
+
+    // The stub derives one channel from the reference and the rest from the
+    // prompt, so "same person, different pose" is observable without a real
+    // model. Without this the whole path would be uncheckable until it was
+    // pointed at fal.
+    expect(channel(a.images[0]!.url, 0)).toBe(channel(b.images[0]!.url, 0));
+    expect(a.images[0]!.url).not.toBe(b.images[0]!.url);
+  });
+
+  it('gives images of different faces different channels', async () => {
+    const provider = new StubImageProvider();
+
+    const mei = await provider.generate({ ...base, identityImageUrls: [FACE] });
+    const daniel = await provider.generate({
+      ...base,
+      identityImageUrls: ['https://storage.test/daniel/hero.png'],
+    });
+
+    expect(channel(mei.images[0]!.url, 0)).not.toBe(channel(daniel.images[0]!.url, 0));
+  });
+
+  it('falls back to the prompt when no face is given', async () => {
+    const provider = new StubImageProvider();
+
+    const a = await provider.generate({ ...base, prompt: 'front view' });
+    const b = await provider.generate({ ...base, prompt: 'side view' });
+
+    // Two prompts, two unrelated images — which is exactly the drift that
+    // identity conditioning removes.
+    expect(channel(a.images[0]!.url, 0)).not.toBe(channel(b.images[0]!.url, 0));
+  });
+});
+
+/**
+ * Reads one RGB byte of the stub PNG's top-left pixel.
+ *
+ * Decoded rather than byte-poked. The stub used to emit an uncompressed 1x1
+ * image, which made "read the byte at a fixed offset" work by accident; it now
+ * emits a real 360x640 frame with a deflated IDAT, because a 1x1 still is
+ * invisible in the UI and made a generated cast look like no cast at all.
+ * Inflating is what makes this assertion about the *image* rather than about
+ * the encoder's layout.
+ */
+function channel(dataUrl: string, index: 0 | 1 | 2): number {
+  const png = Buffer.from(dataUrl.split(',')[1]!, 'base64');
+
+  // Walk the chunks and concatenate every IDAT, which is where the pixels are.
+  const parts: Buffer[] = [];
+  let offset = 8; // past the signature
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.toString('ascii', offset + 4, offset + 8);
+    if (type === 'IDAT') parts.push(png.subarray(offset + 8, offset + 8 + length));
+    if (type === 'IEND') break;
+    offset += 12 + length; // length + type + data + crc
+  }
+
+  // Scanline 0 is a filter byte followed by RGB triples.
+  const raw = inflateSync(Buffer.concat(parts));
+  return raw[1 + index]!;
+}

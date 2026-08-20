@@ -156,6 +156,14 @@ interface Prediction {
 export class ReplicateVideoProvider implements VideoProvider {
   readonly id = 'replicate';
 
+  /**
+   * Zero: this adapter sends one reference image, under a field name the
+   * operator configures, to whatever model they picked. There is no way to
+   * describe a cast to it, so it conditions on the start frame alone and says
+   * so rather than letting a caller assume otherwise.
+   */
+  readonly castCapacity = 0;
+
   clampDuration(seconds: number): number {
     return clampToGrid(seconds, supportedDurations());
   }
@@ -176,8 +184,15 @@ export class ReplicateVideoProvider implements VideoProvider {
       aspect_ratio: input.aspectRatio,
       ...(input.negativePrompt ? { negative_prompt: input.negativePrompt } : {}),
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
-      ...(input.referenceImageUrl
-        ? { [process.env.REPLICATE_VIDEO_IMAGE_INPUT?.trim() || 'image']: input.referenceImageUrl }
+      // Replicate-hosted video models take a single conditioning image, so the
+      // first still of the set is the one that goes; the rest are the caller's
+      // to prioritise. Which field it lands in is the model's business, not
+      // Replicate's — hence the configurable name.
+      ...(input.referenceImageUrls?.[0]
+        ? {
+            [process.env.REPLICATE_VIDEO_IMAGE_INPUT?.trim() || 'image']:
+              input.referenceImageUrls[0],
+          }
         : {}),
     };
 

@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { buildFilterGraph } from '@/lib/providers/ffmpeg/render';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  buildFilterGraph,
+  DEFAULT_MUSIC_LEVEL_DB,
+  musicLevelDb,
+} from '@/lib/providers/ffmpeg/render';
 import { getRenderProvider, registeredProviderIds } from '@/lib/providers';
 
 /**
@@ -36,6 +40,35 @@ describe('render provider registry (AC #4)', () => {
         resolution: '1080x1920',
       }),
     ).toBe(0);
+  });
+});
+
+describe('musicLevelDb', () => {
+  const original = process.env.MUSIC_BED_LEVEL_DB;
+  afterEach(() => {
+    if (original === undefined) delete process.env.MUSIC_BED_LEVEL_DB;
+    else process.env.MUSIC_BED_LEVEL_DB = original;
+  });
+
+  it('defaults to 18dB under the dialogue', () => {
+    delete process.env.MUSIC_BED_LEVEL_DB;
+    expect(musicLevelDb()).toBe(DEFAULT_MUSIC_LEVEL_DB);
+    expect(DEFAULT_MUSIC_LEVEL_DB).toBe(-18);
+  });
+
+  it('takes a configured level', () => {
+    process.env.MUSIC_BED_LEVEL_DB = '-24';
+    expect(musicLevelDb()).toBe(-24);
+  });
+
+  it('refuses a positive level rather than clamping it', () => {
+    // Above 0dB the bed is louder than the dialogue, which nobody means.
+    // Clamping silently would hide the typo.
+    process.env.MUSIC_BED_LEVEL_DB = '18';
+    expect(() => musicLevelDb()).toThrow(/at or below 0/);
+
+    process.env.MUSIC_BED_LEVEL_DB = 'quiet';
+    expect(() => musicLevelDb()).toThrow(/at or below 0/);
   });
 });
 
@@ -127,14 +160,37 @@ describe('buildFilterGraph', () => {
     expect(normAt).toBeGreaterThan(mixAt);
   });
 
-  it('ducks the music bed well under the dialogue', () => {
+  it('ducks the music bed 18dB under the dialogue by default', () => {
     const graph = buildFilterGraph({
       ...base,
       voice: [{ inputIndex: 3, startAt: 0 }],
       musicInputIndex: 4,
     });
-    expect(graph.filter).toContain('volume=0.18');
+    // In dB, not a linear multiplier: it is the unit the requirement is written
+    // in and the unit anyone adjusting it thinks in.
+    expect(graph.filter).toContain(`volume=${DEFAULT_MUSIC_LEVEL_DB}dB`);
     expect(graph.filter).toContain('amix=inputs=2');
+  });
+
+  it('honours a configured music level', () => {
+    const graph = buildFilterGraph({
+      ...base,
+      voice: [{ inputIndex: 3, startAt: 0 }],
+      musicInputIndex: 4,
+      musicLevelDb: -24,
+    });
+    expect(graph.filter).toContain('volume=-24dB');
+  });
+
+  it('ducks before mixing, so the level is a ratio against the dialogue', () => {
+    const graph = buildFilterGraph({
+      ...base,
+      voice: [{ inputIndex: 3, startAt: 0 }],
+      musicInputIndex: 4,
+    });
+    // Attenuating after the mix would quieten the voice by the same amount and
+    // leave the balance between them untouched.
+    expect(graph.filter.indexOf('volume=')).toBeLessThan(graph.filter.indexOf('amix='));
   });
 
   it('mixes music alone when there is no dialogue at all', () => {

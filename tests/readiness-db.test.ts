@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { closeDb, db } from '@/lib/db';
 import { assets, characters, episodes, scenes, series, shots, usageLog } from '@/lib/db/schema';
 import {
@@ -26,6 +26,8 @@ import { recordUsage } from '@/lib/usage';
 const hasDatabase = Boolean(process.env.DATABASE_URL);
 
 const userId = crypto.randomUUID();
+/** The admission cap is keyed on the project, not the account. */
+let seriesId: string;
 let episodeId: string;
 let sceneId: string;
 /** With a line, so it needs both a clip and a voice. */
@@ -47,6 +49,7 @@ describe.skipIf(!hasDatabase).sequential('shot readiness and admission control',
         episodeTargetSeconds: 60,
       })
       .returning();
+    seriesId = s!.id;
 
     const [character] = await handle
       .insert(characters)
@@ -243,7 +246,7 @@ describe.skipIf(!hasDatabase).sequential('shot readiness and admission control',
 
       const admitted: boolean[] = [];
       for (const asset of candidates) {
-        admitted.push(await claimVideoSlot(userId, asset.id));
+        admitted.push(await claimVideoSlot(seriesId, asset.id));
       }
 
       expect(admitted.filter(Boolean)).toHaveLength(MAX_INFLIGHT_VIDEO_JOBS);
@@ -253,10 +256,14 @@ describe.skipIf(!hasDatabase).sequential('shot readiness and admission control',
     });
 
     it('frees a slot when a job reaches a terminal status', async () => {
+      // Scoped to this episode. Unscoped, this counts every suite running
+      // against the same database at the same time, and fails whenever another
+      // file happens to have a video job in flight — a flake that says nothing
+      // about admission control.
       const inflight = await db()
         .select()
         .from(assets)
-        .where(eq(assets.status, 'generating'));
+        .where(and(eq(assets.episodeId, episodeId), eq(assets.status, 'generating')));
       expect(inflight.length).toBe(MAX_INFLIGHT_VIDEO_JOBS);
 
       await updateAsset(inflight[0]!.id, { status: 'ready', costCents: 1 });
@@ -268,7 +275,7 @@ describe.skipIf(!hasDatabase).sequential('shot readiness and admission control',
         provider: 'stub',
         attempt: 200,
       });
-      expect(await claimVideoSlot(userId, next.id)).toBe(true);
+      expect(await claimVideoSlot(seriesId, next.id)).toBe(true);
     });
 
     it('does not let concurrent claims exceed the limit', async () => {
@@ -288,7 +295,7 @@ describe.skipIf(!hasDatabase).sequential('shot readiness and admission control',
 
       // All at once — the advisory lock is what stops two claims both seeing
       // two in flight and both proceeding to a third.
-      const results = await Promise.all(candidates.map((a) => claimVideoSlot(userId, a.id)));
+      const results = await Promise.all(candidates.map((a) => claimVideoSlot(seriesId, a.id)));
       expect(results.filter(Boolean)).toHaveLength(MAX_INFLIGHT_VIDEO_JOBS);
     });
   });

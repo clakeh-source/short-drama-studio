@@ -63,12 +63,21 @@ pnpm install && pnpm db:migrate && pnpm db:buckets && pnpm dev
 > complaining about the Node version, `nvm use` in the project root fixes it.
 
 `pnpm db:migrate` applies the versioned SQL in `/drizzle`; `pnpm db:buckets`
-creates the three private Storage buckets (`clips`, `audio`, `renders`).
-Background jobs need a second terminal:
+creates the four private Storage buckets (`clips`, `audio`, `renders`,
+`references`). Background jobs need a second terminal:
 
 ```bash
 pnpm inngest:dev
 ```
+
+`pnpm db:seed` puts one complete series in the database — *The Last Ferry*, two
+characters, one episode, two scenes, four shots — so a fresh clone has something
+to click through and later phases have fixed data to test against. It is
+idempotent: each run drops the seed series and rebuilds it, and touches nothing
+else. The raw screenplay it was built from stays in `scripts/seed/episode-1.txt`.
+
+`GET /api/health` reports the database and the job queue, unauthenticated, and
+answers 503 when either is down.
 
 Deploying instead of running locally? [docs/DEPLOY.md](docs/DEPLOY.md).
 
@@ -564,13 +573,14 @@ expected to be full of real values and is deliberately not examined.
 | `RUN_LIVE_LLM=1 pnpm test tests/live-anthropic.test.ts` | The Phase 1 criteria against the real model. **Spends money.** |
 | `RUN_LIVE_TTS=1 pnpm test tests/live-providers.test.ts` | The ElevenLabs adapter against the real API. **Spends money** (cents). |
 | `RUN_LIVE_VIDEO=1 pnpm test tests/live-providers.test.ts` | The Replicate adapter against the real API. **Spends money.** Needs credit on the account. |
-| `brew install ffmpeg` | Needed for the local render adapter and the encode tests |
+| `brew install ffmpeg` | Needed for the local render adapter and the encode/assembly tests |
 | `pnpm db:generate` | Generate SQL migration from `lib/db/schema.ts` |
 | `pnpm db:migrate` | Apply the versioned migrations in `/drizzle` (**use this**) |
 | `pnpm db:push` | Diff-based apply — **broken against Supabase**, see above |
-| `pnpm db:buckets` | Create the Storage buckets (idempotent) |
-| `pnpm inngest:dev` | Inngest dev server against `/api/inngest` |
 | `pnpm db:buckets` | Create the private Storage buckets (idempotent) |
+| `pnpm db:seed` | Seed one full series → episode → scenes → shots → characters (idempotent) |
+| `pnpm orphans` | Report storage objects no row points at (`--delete` to remove them) |
+| `pnpm inngest:dev` | Inngest dev server against `/api/inngest` |
 | `pnpm check:secrets` | Standalone secret-exposure scan |
 | `pnpm test:e2e` | Playwright — the whole journey against stub providers |
 | `node scripts/lighthouse.mjs <url>` | Lighthouse performance against a **production** build |
@@ -795,3 +805,494 @@ remaining LCP cost is the ~365 ms auth round trip plus hydration, not bytes.
    that API. The SQL applied is byte-for-byte the output of `pnpm db:generate`.
    Once `DATABASE_URL` is set, `pnpm db:push` should report no changes — which is
    the parity check.
+
+16. **The Kling brief was mapped onto this stack rather than built beside it.**
+    That brief names Next 14, Prisma, BullMQ on Redis, the AWS S3 SDK and
+    `fluent-ffmpeg`; this project was already Next 15, Drizzle, Inngest, Supabase
+    Storage and an ffmpeg render adapter, with the same Project → Episode → Scene
+    → Shot → Character model and most of the same routes. Building the brief
+    literally would have meant two ORMs, two queues and two object stores in one
+    repository. Every phase keeps its intent and its acceptance criteria; only
+    the named libraries differ. The substitutions, one for one:
+
+    | Brief | Here | Why it is the same thing |
+    |---|---|---|
+    | Prisma | Drizzle | Both are typed ORMs over Postgres with versioned migrations. |
+    | BullMQ + Redis | Inngest | Durable queue with retries and concurrency limits; Inngest keeps job state server-side, which is what makes the "kill the worker and it resumes" criterion hold. See deviation 31 for where the analogy stops. |
+    | Kling on fal.ai | Kling on fal.ai | Unchanged — `lib/providers/fal/video.ts`, selected with `VIDEO_PROVIDER=fal`. |
+    | S3 via AWS SDK v3 | Supabase Storage | S3-compatible, and reached only through `StorageProvider` — a raw-S3 adapter is one file. |
+    | `fluent-ffmpeg` | the `ffmpeg` render adapter | Already behind `RenderProvider`, alongside the Shotstack cloud adapter. |
+
+17. **`assets` *is* the GenerationJob table.** It already carries shot id,
+    provider, external job id, status, error, cost and timestamps — plus the
+    storage path of what the job produced. Splitting "the job" from "the file it
+    produced" would create two rows that are always written and deleted together.
+    The mapping is spelled out above the table in `lib/db/schema.ts`.
+
+18. **Character reference stills are a table, not a `text[]`.** The upload goes
+    straight from the browser to Storage on a presigned URL (Phase 2), so the
+    server never sees the bytes and has to record what it verified out of band —
+    content type and size need somewhere to live. `is_canonical` is a stored flag
+    rather than a slice computed at every read site, so the generation job reads
+    the canonical set through one partial index. The five-image cap is a CHECK
+    constraint, not only a route-level rule.
+
+19. **Reference stills upload in three steps, and only the last one is binding.**
+    The client declares what it is about to send and gets one signed URL per
+    file; it PUTs the bytes straight at Storage; it then confirms, and *that* is
+    where the server reads back each object's real size and content type. The
+    first check is a courtesy — a declared `bytes` is a claim — so the rules are
+    enforced at three layers: the declaration (fast 400), the bucket itself
+    (10MB, JPEG/PNG, which is the only layer on the path the bytes actually
+    take), and the confirm, which deletes anything that fails inspection rather
+    than recording a row for it. `pnpm db:buckets` now *updates* existing
+    buckets instead of skipping them, because those bucket settings are
+    load-bearing rather than cosmetic.
+
+20. **"Minimum 1 reference image" is per upload request, not per character.**
+    A character with no stills is normal and has to stay valid: the bible
+    generates a whole cast at once, and an imported script does too. Enforcing a
+    floor of one would make every generated character invalid the moment it was
+    created. The rule as implemented is that an upload batch must contain at
+    least one file and cannot take the character past five. Phase 4 falls back
+    to text-to-video for a character with no canonical set.
+
+21. **A partial reference set is treated as no reference set.** Below three
+    stills nothing is flagged canonical. Conditioning the video model on one or
+    two inconsistent stills is worse than conditioning on none, so the fallback
+    is deliberate rather than a gap.
+
+22. **The cast editor renders without a bible.** It used to sit behind the
+    "no bible yet" empty state, which meant a series with a cast and no bible —
+    an imported script, or the seed — had no way to reach its characters at all,
+    and therefore no way to give them reference stills.
+
+23. **`POST /api/episodes/:id/script` branches on whether you brought a script.**
+    With a JSON body `{ text }` it stores that script verbatim; with no body it
+    writes one and streams it back as SSE. Same resource, same operation from the
+    user's side — "this episode's script is now X" — but one returns a document
+    and the other an event stream, so they cannot share a handler. The raw text
+    is kept in `episodes.script_text` *alongside* the structured `script`,
+    because a breakdown is a lossy reading and re-running it needs the original
+    rather than the last interpretation of it.
+
+24. **The clip ceiling is enforced three times, and only the last one counts.**
+    The prompt asks the model to split a long beat, the schema refuses anything
+    over 15 seconds, and `splitLongShots` splits it anyway. Belt and braces,
+    because a shot over the ceiling is not a shot that looks worse — it is a shot
+    that cannot be generated at all. Splits divide evenly (22s → 11 + 11, not
+    15 + 7) and only the first part keeps the dialogue, or TTS would speak the
+    line twice.
+
+25. **`MAX_CLIP_SECONDS` (15) is not `MAX_SHOT_SECONDS` (8).** The first is
+    Kling's technical per-clip limit and applies to a script the user brought,
+    whose shots are as long as they are. The second is an editorial ceiling for
+    coverage the model plans from nothing, where 8 seconds is already a long
+    time to hold in vertical. Breakdown durations are snapped to the provider's
+    grid but *not* refitted toward an episode budget the way a generated
+    storyboard is — an imported script is not trying to hit 60 seconds.
+
+26. **Regeneration preserves whole scenes, not individual shots.** A scene
+    holding anything queued, generating or finished is left completely alone —
+    rows, prompts, order within the scene. Rebuilding the rest of a scene around
+    an in-flight shot would renumber it, which lands a finished clip at the wrong
+    point in the cut. `queued` is protected alongside the spec's `generating` and
+    `ready` because deleting a queued shot does not cancel the job about to run
+    it; the worker would wake to find its shot gone.
+
+27. **A preserved scene the new breakdown no longer mentions is kept, not
+    deleted.** It moves to the end of the episode and the diff says so. Throwing
+    away a paid-for clip on the strength of the model re-reading a scene boundary
+    differently is not a trade worth making silently.
+
+28. **`[[stub:malformed]]` was added to the stub language model.** The existing
+    markers make a provider call *fail*; this one makes it succeed, bill, and
+    return prose. That is the realistic bad day for a model asked for structured
+    output, and it is the only way to exercise "reject, surface the raw output,
+    persist nothing" without waiting for the real model to have one.
+
+29. **A provider outage is no longer reported as a schema failure.**
+    `JsonGenerationError` is raised both when the model answers badly and when it
+    never answers at all, and the breakdown route used to describe both as "the
+    output did not match the schema". It now carries a `kind`, and an unreachable
+    model surfaces as a 502 quoting the provider — found the hard way, when an
+    Anthropic account with no credit left produced a confident, entirely wrong
+    diagnosis about the prompt.
+
+30. **Tests that resolve their own provider must pin `LLM_PROVIDER=stub`.**
+    `getLlmProvider()` falls back to `anthropic` whenever `ANTHROPIC_API_KEY` is
+    set, which it is in any working `.env.local`. Suites that pass a
+    `StubLlmProvider` explicitly are unaffected; ones that go through a service
+    which resolves its own provider — `runBreakdown` — will otherwise call the
+    real API on every run, billed and non-deterministic.
+
+31. **The concurrency cap is declared at the queue *and* leased in the database,
+    and only the second one holds.** The spec asks for a queue-level rate
+    limiter rather than an app-level semaphore, and the Inngest `concurrency`
+    key on `event.data.seriesId` is exactly that. It is not sufficient here:
+    every `step.sleep` in the poll loop hands the slot back, so a 20-shot
+    episode once submitted all 20 clips before the first finished — a measured
+    peak of 20 live jobs against a stated limit of 3. A BullMQ worker that
+    blocks while polling would not have this problem; Inngest's steps do not
+    block, and that is the whole difference. `claimVideoSlot` is the lease that
+    makes the cap true, counted where the work actually is.
+
+32. **`version` and `retry_count` are different numbers.** A retry is another go
+    at the same take and overwrites; a version is a new take the user asked for
+    and must not. So `/shots/:id/generate` re-attempts the current take and
+    `/shots/:id/regenerate` starts a new one — separate routes rather than a
+    flag, because the two want opposite things from the previous clip and a
+    boolean makes it too easy to pick the wrong one. Storage paths carry both
+    (`.../v{version}/a{attempt}.mp4`), so pruning a take is a prefix operation.
+
+33. **Reference stills are signed for six hours, not the usual one.** The
+    provider fetches the image when it picks the job up, which can be minutes
+    after submission on a busy queue. The failure mode of an expired URL — a
+    clip rendered with no reference, so the character's face quietly changes —
+    is one nobody would ever attribute to a signature TTL.
+
+34. **The fal job id carries the model and the clip length, not just the request
+    id.** fal's status endpoint hangs off the *application* (`fal-ai/kling-video`),
+    not the variant, and fal reports no per-request cost. Encoding both in the
+    id is what makes polling stateless: a restarted worker can finish a job it
+    knows nothing else about, which is AC #3 as a property of the data rather
+    than of the process.
+
+35. **Kling's real duration grid (5s, 10s) is below `MAX_CLIP_SECONDS` (15).**
+    A 15-second shot is legal to plan and renders as 10, because every path
+    snaps durations through `clampDuration`. The mismatch shows up as a shorter
+    clip, never as a rejected request.
+
+36. **Only the first canonical still is sent as `image_url`.** Kling's
+    image-to-video endpoint conditions on one image. The whole set travels as
+    `reference_image_urls` for model versions that read it, and is recorded on
+    the asset either way — dropping the rest silently would make a one-still
+    character indistinguishable from a three-still one after the fact. Whether
+    the extra stills are actually used is the model's business; `FAL_KLING_EXTRA_INPUT`
+    is there for schema differences rather than guessing at them in code.
+
+37. **A shot with no canonical set falls back to text-to-video, and says so.**
+    The chosen mode is written to `assets.meta` as well as logged, because "did
+    this shot actually condition on the character's face" is otherwise
+    unanswerable later — and a silent fallback looks exactly like a working
+    pipeline until you notice the face changed.
+
+38. **`claimVideoSlot`'s first argument changed from a user id to a series id,
+    and TypeScript could not see it.** Both are `string`, so two existing
+    call sites in `tests/readiness-db.test.ts` compiled fine and silently
+    stopped counting anything, admitting five jobs against a cap of three. The
+    tests caught it; the compiler never could. A branded id type would have.
+
+39. **`/assemble` and `/render` are one operation with two names.** The spec
+    calls it assembly; this codebase has called it rendering since Phase 4 and
+    the export panel calls `/render`. Both routes are two lines over
+    `startAssembly`. Two names is a small wart; two implementations would be a
+    real one.
+
+40. **An unassemblable episode returns 409, not 400.** Nothing about the request
+    is malformed — the episode is simply in a state where this cannot happen
+    yet, and will be able to later without the caller changing anything. That
+    distinction is what tells a client whether retrying is pointless. The body
+    carries `incompleteShotIds` and a richer `blockingShots` with a reason per
+    shot.
+
+41. **The refusal happens before anything is submitted.** Not "we start and then
+    stop": a partial episode encodes perfectly well and is indistinguishable
+    from a finished one at the file level, so it would be uploaded, marked
+    `rendered`, and discovered by a human watching it. No render row, no queued
+    job, no file.
+
+42. **The music level is a dB figure, not a linear gain.** It was `volume=0.18`
+    (≈ -14.9dB) hardcoded; it is now `volume=-18dB` and settable with
+    `MUSIC_BED_LEVEL_DB`. dB is the unit the requirement is written in and the
+    unit anyone adjusting it thinks in — "a bit quieter" is 3dB to a person and
+    an unmemorable multiplication to a filtergraph. A positive value is refused
+    rather than clamped, because above 0dB the bed is louder than the dialogue
+    and nobody means that.
+
+43. **Ducking happens before the mix, and the mix before `loudnorm`.** So -18dB
+    is a ratio between the two sources rather than an absolute output level;
+    the normaliser then brings the whole mix to -14 LUFS with the balance
+    preserved. Attenuating after the mix would quieten the voice by the same
+    amount and change nothing.
+
+44. **`episodes.output_storage_path` and `episodes.duration_seconds` duplicate
+    the latest successful `renders` row.** `renders` is the attempt log —
+    several rows per episode, most failed or superseded — and "where is this
+    episode's video" should not require knowing that, nor a scan to find the
+    newest ready one. The column is the answer; the log is the history.
+
+45. **The assembly criteria are verified by looking inside the file.** "Shots in
+    the right order" is asserted by scaling the frame at 1s and at 4s down to a
+    single pixel and reading its colour; "audibly mixed" by measuring the
+    stretch of programme where the dialogue has stopped — silence without a
+    bed, audible music with one. Asserting on the filtergraph string would have
+    proved only that the code says what it says.
+
+46. **The whole project is one tree on one page.** The spec asks to navigate
+    Project → Episode → Scene → Shot; four pages would have satisfied that and
+    been the wrong shape. What a reviewer actually does is scan for what is
+    wrong — a failed shot, a scene still generating — and that is a
+    whole-project question, so the tree collapses rather than paginates. The
+    shot detail is a dialog over it for the same reason: you come back to the
+    board.
+
+47. **Thumbnails are the clip's own first frame, not a stored image.** The
+    `#t=0.1` fragment makes the browser seek there while loading metadata and
+    paint it as the poster. Generating and storing a separate thumbnail per take
+    would mean another object per clip to upload, sign, version and prune in
+    step with it — for a picture the browser will decode anyway.
+
+48. **Reverting is a pointer move.** `shots.version` is the only thing that
+    changes; nothing is re-rendered, re-charged or re-queued, because the clip
+    already exists. That is what versions are *for*, and it is why undoing a
+    regeneration you did not like is instant and free. Only a take that actually
+    produced a clip can be reverted to — a failed version is in the history so
+    you can see that it failed, not so you can switch to it.
+
+49. **Previewing a take is not reverting to it.** Clicking a version in the
+    history strip loads it in the player without committing; Revert commits. A
+    board poll landing mid-preview does not yank the player back to the active
+    take, because the user is deliberately looking at something.
+
+50. **An idle board still polls, slowly.** Polling only while *this page* knows
+    something is moving means a board never notices work started anywhere else —
+    another tab, or a job queued before the page loaded — and silently stops
+    reflecting reality. Five seconds while active, thirty when idle. Found by
+    testing an external status change against an idle board and watching nothing
+    happen.
+
+51. **The poll is fixed-rate, not fixed-delay.** Waiting the full interval
+    *after* each response made the real cycle the interval plus a round trip —
+    measured at 5.7s against a stated 5s, which is the difference between
+    meeting "updates within five seconds" and narrowly missing it. Subtracting
+    the last request's duration brought it to 5.01s.
+
+53. **The autorun sits on top of the six phases, not instead of them.** Every
+    stage calls the same `generate…`/`persist…` pair the manual UI calls, so a
+    run and a hand-built series produce identical rows. That is what lets a run
+    die at stage four and leave three stages of ordinary, editable work behind —
+    a `runs` row is the record of an attempt, not a container for its output.
+
+54. **Gates are skippable, not optional.** At `bible` and `storyboard` the run
+    pauses on `step.waitForEvent` with a timeout, so silence means continue.
+    Those two points are where being wrong is expensive *and* invisible until
+    much later: a wrong bible makes the whole cast and every scene wrong, a
+    wrong shot list makes 36 clips wrong. Everything else is mechanical or
+    cheap. `shots` is deliberately *not* gated — it would ask twice for one
+    decision the storyboard gate already covers.
+
+55. **Spend is checked against the worst case, not the expected one.** A run
+    that stops two-thirds through for want of budget has spent the money and
+    produced nothing watchable, so a 3-minute run needs the $28 ceiling free,
+    not the $17 estimate.
+
+56. **The expensive stage is polled, not awaited.** Shot generation fans out to
+    per-shot jobs with their own retries and concurrency cap, so the supervisor
+    waits on the *rows*. A shot retried automatically — or regenerated by hand
+    from the review board mid-run — is then accounted for correctly, which
+    counting events could not do.
+
+57. **The cost is quoted before the run, and it moves with the length.**
+    `GET /api/runs/estimate` exists separately from `POST /api/runs` because
+    quoting only at the moment of commitment tells someone what they have
+    already decided to spend. Almost all of it is video — $16.20 of $17.22 for
+    three minutes — so the breakdown is shown rather than a single number.
+
+58. **Character stills are generated from the appearance prompt, and three of
+    them share a seed.** That is the cheapest thing that helps, not a guarantee:
+    one seed and three framing instructions give three *related* images, not
+    three photographs of one person. True identity lock needs an
+    identity-preserving model. It is why the canonical set is three images and
+    why the cast gate exists.
+
+59. **Concurrency, not shot planning, is what makes a long film slow.** The
+    duration fitter already lands a 60s, 3-minute, 5-minute or 10-minute target
+    at exactly the target — measured 0% drift at all four. What does not scale is
+    the wall clock: 36 clips three at a time is ~25 minutes, and ten minutes of
+    film at three is over two hours. `VIDEO_CONCURRENCY` is therefore the one
+    lever worth exposing, and both the lease and the Inngest `concurrency` option
+    read the same constant so they cannot disagree — two different numbers would
+    mean the queue admitting work the lease then refuses.
+
+60. **The estimate quotes time as well as money.** A "3-minute film" that takes
+    27 minutes to make is where someone decides the app has hung. Cost and time
+    move independently: raising concurrency shortens the run and changes the bill
+    not at all, which is exactly what the test asserts.
+
+61. **The supervisor's shot timeout is derived, not fixed.** A flat 30 minutes
+    was right for a 60-second short and would abandon a 3-minute film around
+    halfway — money spent, film unfinished, which is the worst available outcome.
+    It now budgets four minutes per batch against a nominal two, from the shot
+    count that actually exists rather than the one that was planned.
+
+62. **`tests/video-concurrency.test.ts` uses dynamic imports on purpose.** ESM
+    hoists `import` above every statement in the module body, so setting
+    `process.env` at the top of a file runs *after* the module that reads it has
+    loaded. The first version of that test asserted 8 and got 3 for exactly this
+    reason.
+
+64. **Regenerating a character's stills used to orphan the previous set.**
+    `generateCharacterPortraits` replaces the row set, and replaced the rows
+    only — three images left in the bucket per regeneration, with nothing
+    pointing at them. Invisible, because the UI reads rows. Found by sweeping
+    for unreferenced objects after a verification run, not by any test. It now
+    deletes storage first, matching every other path that owns both.
+
+65. **Test teardown deletes by user, not by row.** A `beforeEach` that drops the
+    series cascades away the characters, and with them any record of which
+    objects were theirs — so teardown that walked the cast could only ever clean
+    up after the *last* test in a file. That is where 126 orphaned objects came
+    from. Every path in this codebase starts with the owning user's id, which is
+    the one handle that outlives the rows, so `tests/support/storage.ts` deletes
+    by that. It reaches for the admin client rather than `StorageProvider`
+    deliberately: the interface hides folders from `list` because nothing in the
+    app walks a tree, and bending it for teardown would be the tail wagging the
+    dog.
+
+67. **A character's stills are generated hero-first, then conditioned on that
+    face.** Three images from one prompt and one seed are three people who match
+    a description; two of them generated from the *first one's photograph* are
+    one person in three poses. That ordering is the whole mechanism, and it
+    costs an extra round trip — the hero has to be stored and signed before the
+    rest can reference it.
+
+68. **`supportsIdentity` is declared, not inferred.** A reference passed to a
+    model that ignores it produces exactly the drift the reference exists to
+    remove, with nothing to distinguish the result from a set that worked. So
+    providers declare the capability, callers degrade deliberately, and
+    `identityLocked` comes back on the result and into the toast — because a set
+    that drifted looks identical to one that did not until thirty clips later.
+
+69. **The identity reference is sent under two field names.** PuLID calls it
+    `reference_image_url`; InstantID and IP-Adapter FaceID call it `image_url`.
+    They are mutually exclusive in practice — a model reads the one it knows —
+    and guessing wrong drops the reference in silence.
+
+70. **Multi-character shots are fixed by drawing the shot, not the person.**
+    Kling conditions on one image per clip, so sending a character's portrait
+    meant a two-hander preserved only the first-billed face — *and* every clip
+    opened on a grey studio backdrop it had to travel out of in five seconds.
+    Both are the same mistake: conditioning on a picture of a person when what
+    is needed is a picture of the shot. Each shot now gets a **keyframe** drawn
+    from its own prompt with every character's stills as identity references,
+    and that becomes the start frame. (Half of this is now handled better
+    upstream — see #75.)
+
+71. **`identityCapacity` is declared, and `facesUsed` is recorded.** "We sent
+    two references" and "the model conditioned on two" are different claims, and
+    only the second fixes a two-hander. PuLID and InstantID read one, so with
+    them the second character still comes from the prompt — the asset row says
+    so rather than implying otherwise. Raising `FAL_IMAGE_IDENTITY_CAPACITY`
+    against a multi-identity model is the only change needed to lock both.
+
+72. **The capacity setting is clamped to what the model is known to read.** It
+    describes the configured model; it does not grant it a capability. Setting 4
+    against PuLID does not produce four conditioned faces — it produces one face
+    and a wrong number in the asset row, which is the exact failure the number
+    exists to expose, reintroduced through its own setting. Known
+    single-identity models are matched by pattern and clamped with a warning;
+    unrecognised models are trusted, because refusing them would make every new
+    model unusable until the list caught up.
+
+73. **The keyframe is booked as an asset.** It is stored and it costs money, and
+    the spend ledger reconciles against `assets.cost_cents` — so it gets an
+    `image` row and its own `usage_log` entry. Recording the charge without a
+    row would break that invariant; recording neither would understate a film by
+    one image per shot. It also moves the quote: a 3-minute film went from
+    $17.22 to **$19.26**, and the cast line rose because the set is now drawn at
+    the identity rate.
+
+74. **`/api/health` reports the queue, and says when it did not probe it.** The
+    brief asks for Redis connection status. Locally the equivalent is the Inngest
+    dev server, which has a `/health` endpoint worth pinging. In production the
+    queue is Inngest Cloud, which exposes no unauthenticated probe — so that
+    branch reports that the app is configured to reach it and sets
+    `probed: false`, rather than claiming a connection it never made.
+
+75. **Identity belongs at the video call, not at the frame before it.** The
+    keyframe above was built on the belief that Kling conditions on exactly one
+    image, so several faces had to be composited into that image first. It does
+    not: `elements` takes a group of stills *per character*, and the prompt
+    points at them by position. Checking fal's OpenAPI schema rather than its
+    prose also turned up that the start frame had been going under a field name
+    the endpoint does not define — `image_url` instead of `start_image_url` — so
+    every image-to-video call ever made was malformed, invisibly, because the
+    path had never run against live fal.
+
+76. **The keyframe stayed anyway, with its job cut in half.** Elements say who
+    is in the clip and nothing about where it is or how it is framed, and a clip
+    that opens already in the harbour terminal is worth an image per shot. So
+    both are sent: the keyframe as `start_image_url` for composition, the
+    elements for identity. It is still drawn *with* identity conditioning, even
+    though identity is now held downstream — a first frame showing different
+    faces than the elements would put the two instructions in conflict on frame
+    one. `SHOT_KEYFRAMES=off` now costs composition and not character
+    consistency, which is a different trade than the one that setting used to
+    describe.
+
+77. **Rewriting the prompt is the risky part, so it was checked against real
+    prompts.** Kling matches elements by position (`@Element1`), and our prompts
+    name people in prose a language model wrote. The substitution is whole-word,
+    any script, any case, full names before bare first names, and refuses to
+    guess when two characters share a first name — a wrongly tagged face is
+    worse than an untagged mention, and neither is visible until the clip
+    exists. Run over 40 real storyboard prompts: 41 of 42 cast slots tagged by
+    name, one introduced by the fallback clause.
+
+78. **`castCapacity` is read off the model, not asserted by the adapter.** The
+    Kling generations differ in ways that fail silently: v1.6, v2.1 and v2.5
+    take the start frame as `image_url` and have no `elements` field, while v3
+    and o1 take `start_image_url` and do. Pinning an older model through
+    `FAL_KLING_IMAGE_TO_VIDEO_MODEL` is legitimate and quietly removes
+    multi-character identity, so the capability comes from the configured id.
+    An unknown model is assumed newer rather than older — the opposite guess
+    degrades a capable model to a start frame it cannot read.
+
+79. **`generate` returns what only the adapter knows.** `elementsUsed` against
+    `castRequested`, plus any name the prompt never used, land on the asset row.
+    A gap between those two numbers is a shot where somebody was *described*
+    rather than *held*, which renders perfectly and drifts — the only failure
+    mode here that looks like success. The submit step also carries that meta
+    forward to the ready branch, because `updateAsset` replaces `meta` rather
+    than merging it, and a finished clip would otherwise be the one row that no
+    longer says what it was conditioned on.
+
+## Assets
+
+Everything generated, in one place, reusable. `/assets`.
+
+Four things produce stored objects and none knew about each other: a shot's
+clips and keyframes, a character's reference stills, an episode's finished cuts,
+and voice tracks. They live in different tables because they have different
+owners and lifetimes — which is right, and left no answer to "what have I made",
+and no way to use a picture you already paid for in a shot that needs one.
+
+80. **Reuse copies the object; it never points at it.** `pruneShotVersions`
+    deletes the objects of every take beyond the last three. A character
+    reference pointing at a shot's keyframe would therefore lose its face the
+    fourth time that shot was regenerated — days later, as a broken image, with
+    nothing linking it to the regeneration that caused it. A copy costs cents a
+    month and buys an asset whose lifetime belongs to whoever reused it. It is
+    also what lets an asset cross series, since ownership here is by path.
+
+81. **A pinned start frame is not a take, so pruning leaves it alone.** Pruning
+    is a rule about outputs — the fourth regeneration makes the first
+    uninteresting. A pinned frame is an *input* to future takes, chosen by a
+    person. Deleting it by version count would send the shot back to drawing its
+    own keyframe, silently, having been told not to.
+
+82. **Reuse is free, and recorded as free.** The image was paid for when it was
+    generated. A pinned keyframe is written with `cost_cents: 0`, because
+    charging again would double-count against the spend cap and overstate what
+    the film cost. It also saves the ~5c the job would have spent drawing a
+    keyframe it was about to be handed.
+
+83. **Every failure path after the copy deletes the copy.** An object with no row
+    is invisible: not in this library, not deleted with its owner, and visible
+    only as a line on a storage bill. This project has already paid that debt
+    once — a sweeper and 510 deletions — and the ordering rules here are the
+    lesson. Rows first, then storage, except when replacing a pin, where the
+    superseded object goes only after the new row has committed: a rollback that
+    restored a row pointing at a deleted object would be unrecoverable, while a
+    leftover object is one `pnpm orphans` away.

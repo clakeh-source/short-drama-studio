@@ -1,6 +1,6 @@
 import type { LlmGenerateInput, LlmProvider, LlmStreamChunk, LlmUsage } from '../types';
 import { estimateScriptSeconds, WORDS_PER_SECOND } from '../../timing';
-import { delay, failureFor } from './support';
+import { delay, failureFor, MALFORMED_MARKER } from './support';
 
 /**
  * Deterministic stand-in for the language model.
@@ -249,6 +249,166 @@ function storyboardFixture(source: Record<string, unknown>): unknown {
   return { scenes: built };
 }
 
+/**
+ * A breakdown of whatever script text it was handed.
+ *
+ * Unlike the other fixtures this one genuinely reads its input: the Phase 3
+ * criteria are about *this* script producing *these* scenes, dialogue carried
+ * through verbatim, and named characters mapped. A canned fixture would make all
+ * three untestable without spending money on the real model.
+ *
+ * The parsing is deliberately crude — sluglines and screenplay-cased character
+ * cues — because it only has to be good enough to prove the pipeline moves the
+ * right strings to the right columns.
+ */
+function breakdownFixture(source: Record<string, unknown>): unknown {
+  const text = str(source, 'scriptText', '');
+  const maxClip = num(source, 'maxClipSeconds', 15);
+  const defaultSeconds = num(source, 'defaultShotSeconds', 5);
+
+  const lines = text.split('\n').map((l) => l.trim());
+
+  type Shot = {
+    camera: string;
+    action: string;
+    dialogue: string | null;
+    speaker: string | null;
+    characters: string[];
+    duration_seconds: number;
+  };
+  type Scene = {
+    location: string;
+    time_of_day: string;
+    summary: string;
+    shots: Shot[];
+  };
+
+  const scenes: Scene[] = [];
+  let cursor = 0;
+
+  // Title pages and episode headers sit above the first slugline and are not
+  // part of any scene. Without this the title reads as a character cue and its
+  // subtitle as that character's first line.
+  const hasSluglines = lines.some((l) => /^(INT\.|EXT\.|INT\/EXT\.)/i.test(l));
+
+  const openScene = (slug: string) => {
+    // "INT. HARBOUR TERMINAL - NIGHT" → location + time of day.
+    const body = slug.replace(/^(INT\.|EXT\.|INT\/EXT\.)\s*/i, '');
+    const [place, when] = body.split(/\s+-\s+/);
+    scenes.push({
+      location: titleCase(place ?? body),
+      time_of_day: (when ?? 'day').toLowerCase(),
+      summary: `The scene at ${titleCase(place ?? body).toLowerCase()}.`,
+      shots: [],
+    });
+  };
+
+  const push = (shot: Omit<Shot, 'camera'>) => {
+    if (scenes.length === 0) openScene('INT. UNSPECIFIED - DAY');
+    const scene = scenes[scenes.length - 1]!;
+    scene.shots.push({ camera: CAMERA_CYCLE[cursor++ % CAMERA_CYCLE.length]!, ...shot });
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!line) continue;
+
+    if (/^(INT\.|EXT\.|INT\/EXT\.)/i.test(line)) {
+      openScene(line);
+      continue;
+    }
+
+    if (hasSluglines && scenes.length === 0) continue;
+
+    // A character cue is a short all-caps line with a line under it.
+    const cue = /^([A-Z][A-Z .'-]{1,40})(\s*\(CONT'D\))?$/.exec(line);
+    const next = lines[i + 1];
+    if (cue && next && !/^(INT\.|EXT\.)/i.test(next)) {
+      const speaker = titleCase(cue[1]!.trim());
+      // A parenthetical sits between the cue and the line.
+      const dialogue = /^\(.*\)$/.test(next) ? (lines[i + 2] ?? '') : next;
+      const consumed = /^\(.*\)$/.test(next) ? 2 : 1;
+
+      if (dialogue) {
+        push({
+          action: `${speaker} speaks.`,
+          // Verbatim: the criterion is that the author's line survives the trip.
+          dialogue,
+          speaker,
+          characters: [speaker],
+          duration_seconds: Math.min(
+            maxClip,
+            Math.max(3, Math.ceil(dialogue.split(/\s+/).length / 2.5) + 1),
+          ),
+        });
+        i += consumed;
+        continue;
+      }
+    }
+
+    // Anything else is action.
+    push({
+      action: line.slice(0, 600),
+      dialogue: null,
+      speaker: null,
+      characters: namesIn(line),
+      duration_seconds: defaultSeconds,
+    });
+  }
+
+  if (scenes.length === 0) {
+    scenes.push({
+      location: 'Unspecified',
+      time_of_day: 'day',
+      summary: 'The whole script, uncut.',
+      shots: [
+        {
+          camera: 'medium',
+          action: text.slice(0, 600) || 'Nothing happens.',
+          dialogue: null,
+          speaker: null,
+          characters: [],
+          duration_seconds: defaultSeconds,
+        },
+      ],
+    });
+  }
+
+  // Every scene needs at least one shot to satisfy the schema.
+  for (const scene of scenes) {
+    if (scene.shots.length === 0) {
+      scene.shots.push({
+        camera: 'wide',
+        action: scene.summary,
+        dialogue: null,
+        speaker: null,
+        characters: [],
+        duration_seconds: defaultSeconds,
+      });
+    }
+  }
+
+  return { scenes };
+}
+
+/** Screenplay-cased names inside an action line, e.g. "MEI LIN, 32, stands". */
+function namesIn(line: string): string[] {
+  const found = new Set<string>();
+  for (const match of line.matchAll(/\b([A-Z][A-Z]+(?: [A-Z][A-Z]+)*)\b/g)) {
+    const name = match[1]!;
+    // Single short words are shouting or an acronym, not a character.
+    if (name.length >= 4 && !/^(INT|EXT|CONT|DELAYED)$/.test(name)) found.add(titleCase(name));
+  }
+  return [...found].slice(0, 6);
+}
+
+function titleCase(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\b[a-z]/g, (c) => c.toUpperCase())
+    .trim();
+}
+
 function safetyFixture(source: Record<string, unknown>): unknown {
   const text = str(source, 'text', '');
   const flagged = /\[\[unsafe\]\]/i.test(text);
@@ -268,6 +428,8 @@ function fixtureFor(input: LlmGenerateInput): unknown {
       return sceneFixture(source);
     case 'storyboard.generate':
       return storyboardFixture(source);
+    case 'breakdown.generate':
+      return breakdownFixture(source);
     case 'safety.screen':
       return safetyFixture(source);
     case 'export.caption':
@@ -324,7 +486,13 @@ export class StubLlmProvider implements LlmProvider {
     yield { type: 'thinking', text: `Planning ${input.operation}…` };
     await delay(CHUNK_DELAY_MS);
 
-    const body = JSON.stringify(fixtureFor(input), null, 2);
+    // A successful, billed call that returns something unusable. Deliberately
+    // has no `{` in it, so it fails at extraction rather than at parsing —
+    // partial JSON would leave open which layer actually caught it.
+    const body = promptText.includes(MALFORMED_MARKER)
+      ? 'Certainly! Here is the breakdown you asked for, written out as prose ' +
+        'because I have decided that reads better.'
+      : JSON.stringify(fixtureFor(input), null, 2);
 
     for (let i = 0; i < body.length; i += CHUNK_CHARS) {
       yield { type: 'text', text: body.slice(i, i + CHUNK_CHARS) };

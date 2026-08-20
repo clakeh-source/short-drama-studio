@@ -1,7 +1,11 @@
-import { badRequest } from '@/lib/api/handler';
+import { eq } from 'drizzle-orm';
+import { z } from 'zod';
+import { badRequest, dynamicRoute } from '@/lib/api/handler';
 import { sseRoute } from '@/lib/api/sse';
 import { assertLlmBudget } from '@/lib/ai/budget';
 import { generateScript } from '@/lib/ai/script';
+import { withUserDb } from '@/lib/db';
+import { episodes } from '@/lib/db/schema';
 import {
   loadContinuitySummary,
   loadEpisode,
@@ -13,8 +17,78 @@ import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
 import { RATE_LIMITS } from '@/lib/rate-limit';
 
+/**
+ * Setting an episode's script.
+ *
+ * One resource, two ways to fill it, chosen by whether the caller brought a
+ * script of their own:
+ *
+ *   POST with a JSON body `{ text }`  →  store that script, verbatim
+ *   POST with no body                 →  write one, streamed back as SSE
+ *
+ * They are the same operation from the user's point of view — "this episode's
+ * script is now X" — so they share a path. They cannot share a handler, because
+ * one returns a JSON document and the other an event stream.
+ */
+export async function POST(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+): Promise<Response> {
+  const contentType = request.headers.get('content-type') ?? '';
+  return contentType.includes('application/json')
+    ? ingestScript(request, context)
+    : generateEpisodeScript(request, context);
+}
+
+const ingestSchema = z.object({
+  /**
+   * The screenplay as written. Stored untouched — the breakdown in
+   * /api/episodes/:id/breakdown is what interprets it, and it needs the
+   * original rather than an interpretation of it.
+   */
+  text: z.string().min(1).max(400_000),
+});
+
+const ingestScript = dynamicRoute<{ id: string }, z.infer<typeof ingestSchema>>(
+  { operation: 'script.ingest', body: ingestSchema },
+  async ({ body, params, user }) => {
+    const text = body.text.trim();
+    if (!text) throw badRequest('That script is empty.');
+
+    // Confirms the episode exists and is this user's, through RLS.
+    const { episode } = await loadEpisode(user.id, params.id);
+
+    const [row] = await withUserDb(user.id, (tx) =>
+      tx
+        .update(episodes)
+        .set({
+          scriptText: text,
+          // The board is built from the script, so a new script means the
+          // existing one is stale. Saying so is honest; rebuilding it here
+          // without being asked would not be.
+          status: episode.status === 'draft' ? 'scripted' : episode.status,
+        })
+        .where(eq(episodes.id, params.id))
+        .returning({ id: episodes.id, status: episodes.status }),
+    );
+
+    return {
+      stored: true,
+      episodeId: row!.id,
+      status: row!.status,
+      characters: text.length,
+      /** Truthy when a previous breakdown of a different script is still on the board. */
+      breakdownMayBeStale: episode.status === 'storyboarded',
+    };
+  },
+);
+
 /** Writes (or rewrites) the whole episode script, streamed to the client. */
-export const POST = sseRoute<{ id: string }>(
+// Not `export const POST`: the exported POST above dispatches on content type,
+// because one resource is filled two ways. The rate limit and the budget
+// preflight come from the audit on main and apply to the generating half only —
+// storing a script the caller already wrote costs no model time.
+const generateEpisodeScript = sseRoute<{ id: string }>(
   {
     operation: 'script.generate',
     rateLimit: RATE_LIMITS.model,

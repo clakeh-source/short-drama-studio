@@ -27,6 +27,19 @@ export class JsonGenerationError extends Error {
     message: string,
     readonly attempts: number,
     readonly lastRaw: string,
+    /**
+     * Which kind of failure exhausted the attempts.
+     *
+     * `schema` means the model answered and the answer was wrong — there is raw
+     * output to show the user. `provider` means it never answered at all: an
+     * outage, a rate limit, an empty account. Callers must not conflate them.
+     * Reporting "the model returned output that did not match the schema" when
+     * the truth is "your Anthropic balance is zero" sends someone looking at
+     * their prompt for an hour.
+     */
+    readonly kind: 'schema' | 'provider' = 'schema',
+    /** The underlying provider message, when `kind` is `provider`. */
+    readonly providerError?: string,
   ) {
     super(message);
     this.name = 'JsonGenerationError';
@@ -101,6 +114,7 @@ export async function streamJson<T>(options: StreamJsonOptions<T>): Promise<Stre
 
   const total: LlmUsage = { tokensIn: 0, tokensOut: 0, costCents: 0 };
   let lastError = '';
+  let lastKind: 'schema' | 'provider' = 'schema';
   let raw = '';
 
   /**
@@ -189,6 +203,8 @@ export async function streamJson<T>(options: StreamJsonOptions<T>): Promise<Stre
             ? error.message
             : String(error);
 
+      lastKind = fromProvider ? 'provider' : 'schema';
+
       log.warn('json generation attempt failed', {
         operation: options.operation,
         attempt,
@@ -229,8 +245,12 @@ export async function streamJson<T>(options: StreamJsonOptions<T>): Promise<Stre
   }
 
   throw new JsonGenerationError(
-    `${options.operation} failed schema validation after ${maxAttempts} attempts: ${lastError}`,
+    lastKind === 'provider'
+      ? `${options.operation} could not reach the model after ${maxAttempts} attempts: ${lastError}`
+      : `${options.operation} failed schema validation after ${maxAttempts} attempts: ${lastError}`,
     maxAttempts,
     raw,
+    lastKind,
+    ...(lastKind === 'provider' ? ([lastError] as const) : []),
   );
 }

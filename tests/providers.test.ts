@@ -67,7 +67,8 @@ describe('provider registry (Phase 0 AC #6)', () => {
   it('reports what is registered', () => {
     expect(registeredProviderIds()).toEqual({
       llm: ['stub', 'anthropic'],
-      video: ['stub', 'replicate'],
+      video: ['stub', 'replicate', 'fal'],
+      image: ['stub', 'fal'],
       tts: ['stub', 'elevenlabs'],
       render: ['stub', 'shotstack', 'ffmpeg'],
     });

@@ -35,6 +35,37 @@ const jobs = new Map<string, FfmpegJob>();
 /** Local encoding costs nothing but electricity. */
 const COST_CENTS = 0;
 
+/**
+ * How far the music bed sits under the dialogue, in decibels.
+ *
+ * Expressed in dB rather than as a linear gain because that is the unit the
+ * requirement is written in and the unit anyone adjusting it will think in:
+ * "a bit quieter" means 3dB to a human and an unmemorable multiplication to a
+ * filtergraph. -18dB is roughly 0.126 linear — quiet enough that speech stays
+ * intelligible over it, loud enough to be audibly there.
+ *
+ * The mix happens *before* `loudnorm`, so this is a ratio between the two
+ * sources, not an absolute output level: the normaliser then brings the whole
+ * mix to -14 LUFS with the balance preserved.
+ */
+export const DEFAULT_MUSIC_LEVEL_DB = -18;
+
+export function musicLevelDb(): number {
+  const raw = process.env.MUSIC_BED_LEVEL_DB?.trim();
+  if (!raw) return DEFAULT_MUSIC_LEVEL_DB;
+
+  const parsed = Number(raw);
+  // Above 0dB the bed is louder than the dialogue, which is never what anyone
+  // means; silently clamping would hide a typo, so refuse it.
+  if (!Number.isFinite(parsed) || parsed > 0) {
+    throw new Error(
+      `MUSIC_BED_LEVEL_DB="${raw}" is not a number at or below 0. It is how far the music ` +
+        `sits *under* the dialogue, e.g. -18.`,
+    );
+  }
+  return parsed;
+}
+
 function ffmpegPath(): string {
   return process.env.FFMPEG_PATH?.trim() || 'ffmpeg';
 }
@@ -138,6 +169,8 @@ export function buildFilterGraph(input: {
   musicInputIndex: number | null;
   subtitlesFile: string | null;
   totalSeconds: number;
+  /** How far under the dialogue the bed sits. Defaults to -18dB. */
+  musicLevelDb?: number;
 }): { filter: string; videoLabel: string; audioLabel: string | null } {
   const parts: string[] = [];
 
@@ -175,8 +208,10 @@ export function buildFilterGraph(input: {
   }
 
   if (input.musicInputIndex !== null) {
+    // `volume` takes a dB value directly when suffixed, which keeps the level
+    // in the unit the requirement is stated in rather than a magic multiplier.
     parts.push(
-      `[${input.musicInputIndex}:a]aresample=48000,volume=0.18,` +
+      `[${input.musicInputIndex}:a]aresample=48000,volume=${input.musicLevelDb ?? DEFAULT_MUSIC_LEVEL_DB}dB,` +
         `atrim=0:${input.totalSeconds},apad=whole_dur=${input.totalSeconds}[amus]`,
     );
     audioLabels.push('[amus]');
@@ -298,6 +333,7 @@ export class FfmpegRenderProvider implements RenderProvider {
         musicInputIndex,
         subtitlesFile,
         totalSeconds,
+        musicLevelDb: musicLevelDb(),
       });
 
       args.push('-filter_complex', graph.filter);

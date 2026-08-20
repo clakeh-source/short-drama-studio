@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { contentSecurityPolicy, makeNonce } from '@/lib/security-headers';
 
 /** Routes reachable without a session. Everything else requires one. */
-const PUBLIC_PATHS = ['/login', '/auth', '/api/inngest'];
+const PUBLIC_PATHS = ['/login', '/auth', '/api/inngest', '/api/health'];
 
 function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));

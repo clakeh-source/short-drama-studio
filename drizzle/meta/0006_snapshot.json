@@ -1,5 +1,5 @@
 {
-  "id": "b1b465d0-9e61-49fa-9474-efe9e0e44a63",
+  "id": "dcf1d487-2582-4b16-a434-944fa437cfe7",
   "prevId": "321dcc4a-f1b8-4341-a0a3-5d98bc9be8d3",
   "version": "7",
   "dialect": "postgresql",
@@ -175,6 +175,154 @@
         }
       },
       "checkConstraints": {},
+      "isRLSEnabled": true
+    },
+    "public.character_reference_images": {
+      "name": "character_reference_images",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "character_id": {
+          "name": "character_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "storage_path": {
+          "name": "storage_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bytes": {
+          "name": "bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_index": {
+          "name": "order_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_canonical": {
+          "name": "is_canonical",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "character_reference_images_character_order_idx": {
+          "name": "character_reference_images_character_order_idx",
+          "columns": [
+            {
+              "expression": "character_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "order_index",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "character_reference_images_canonical_idx": {
+          "name": "character_reference_images_canonical_idx",
+          "columns": [
+            {
+              "expression": "character_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "is_canonical",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "character_reference_images_character_id_characters_id_fk": {
+          "name": "character_reference_images_character_id_characters_id_fk",
+          "tableFrom": "character_reference_images",
+          "tableTo": "characters",
+          "columnsFrom": [
+            "character_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "character_reference_images_path_uq": {
+          "name": "character_reference_images_path_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "character_id",
+            "storage_path"
+          ]
+        }
+      },
+      "policies": {
+        "character_reference_images_owner_all": {
+          "name": "character_reference_images_owner_all",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "authenticated"
+          ],
+          "using": "exists (select 1 from characters c join series s on s.id = c.series_id where c.id = character_reference_images.character_id and s.user_id = (select auth.uid()))",
+          "withCheck": "exists (select 1 from characters c join series s on s.id = c.series_id where c.id = character_reference_images.character_id and s.user_id = (select auth.uid()))"
+        }
+      },
+      "checkConstraints": {
+        "character_reference_images_order_bounds": {
+          "name": "character_reference_images_order_bounds",
+          "value": "order_index between 0 and 4"
+        }
+      },
       "isRLSEnabled": true
     },
     "public.characters": {
@@ -626,55 +774,6 @@
           "withCheck": "listings.user_id = (select auth.uid())"
         }
       },
-      "checkConstraints": {},
-      "isRLSEnabled": true
-    },
-    "public.rate_limits": {
-      "name": "rate_limits",
-      "schema": "",
-      "columns": {
-        "key": {
-          "name": "key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "count": {
-          "name": "count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "window_start": {
-          "name": "window_start",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "rate_limits_window_start_idx": {
-          "name": "rate_limits_window_start_idx",
-          "columns": [
-            {
-              "expression": "window_start",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": true
     },

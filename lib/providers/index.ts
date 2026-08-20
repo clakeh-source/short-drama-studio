@@ -1,6 +1,9 @@
 export { isRetryableStatus, ProviderRequestError, TokenBudgetError } from './types';
 
 export type {
+  GeneratedImage,
+  ImageGenInput,
+  ImageProvider,
   LlmGenerateInput,
   LlmMessage,
   LlmProvider,
@@ -10,11 +13,13 @@ export type {
   RenderInput,
   RenderProvider,
   TtsProvider,
+  VideoCastReference,
   VideoGenInput,
   VideoProvider,
 } from './types';
 
 export {
+  getImageProvider,
   getLlmProvider,
   getRenderProvider,
   getTtsProvider,

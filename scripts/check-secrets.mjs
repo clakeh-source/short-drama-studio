@@ -118,7 +118,16 @@ if (existsSync(EXAMPLE)) {
 
 /* -- check 3: source files ------------------------------------------------- */
 
-const SKIP_DIRS = new Set(['node_modules', '.next', '.git', 'drizzle', 'playwright-report']);
+// `.claude` holds agent worktrees: entire checkouts of this repo nested inside
+// it. Scanning them reports another branch's files as if they were ours.
+const SKIP_DIRS = new Set([
+  'node_modules',
+  '.next',
+  '.git',
+  '.claude',
+  'drizzle',
+  'playwright-report',
+]);
 
 function* walk(dir) {
   for (const entry of readdirSync(dir)) {

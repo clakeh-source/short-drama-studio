@@ -178,7 +178,17 @@ export const renderEpisode = inngest.createFunction(
           costCents: result.costCents,
         });
 
-        await db().update(episodes).set({ status: 'rendered' }).where(eq(episodes.id, episodeId));
+        // The episode carries its own finished video, so "where is it" is a
+        // column read rather than a scan of the attempt log for the newest
+        // ready row.
+        await db()
+          .update(episodes)
+          .set({
+            status: 'rendered',
+            outputStoragePath: stored.storagePath,
+            durationSeconds: Math.round(plan.timeline.totalSeconds),
+          })
+          .where(eq(episodes.id, episodeId));
 
         log.info('render ready', {
           ...context,

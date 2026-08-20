@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -60,6 +62,33 @@ export const shotStatus = pgEnum('shot_status', [
 
 export const assetKind = pgEnum('asset_kind', ['video', 'image', 'voice', 'music', 'sfx']);
 
+/**
+ * The stages an unattended run walks through, in order.
+ *
+ * Named for what they produce rather than which service they call, because the
+ * user watching a progress bar cares that the cast is being drawn, not that a
+ * diffusion model is being polled.
+ */
+export const runStage = pgEnum('run_stage', [
+  'bible',
+  'cast',
+  'script',
+  'storyboard',
+  'shots',
+  'assemble',
+  'done',
+]);
+
+export const runStatus = pgEnum('run_status', [
+  'pending',
+  'running',
+  /** Paused at a gate, counting down. Continues on its own if nobody acts. */
+  'awaiting_gate',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
 export const jobStatus = pgEnum('job_status', [
   'pending',
   'queued',
@@ -99,6 +128,14 @@ const ownsEpisode = (col: string) =>
   sql.raw(
     `exists (select 1 from episodes e join series s on s.id = e.series_id ` +
       `where e.id = ${col} and s.user_id = ${UID})`,
+  );
+
+/** Walks character → series. Takes the child's character_id, never its id. */
+const ownsCharacter = (col: string) =>
+  sql.raw(
+    `exists (select 1 from characters c ` +
+      `join series s on s.id = c.series_id ` +
+      `where c.id = ${col} and s.user_id = ${UID})`,
   );
 
 /** Walks scene → episode → series. Takes the shot's own scene_id, never its id. */
@@ -185,6 +222,66 @@ export const characters = pgTable(
 ).enableRLS();
 
 /* -------------------------------------------------------------------------- */
+/* character_reference_images                                                 */
+/*                                                                            */
+/* Stills the user uploads of a character, used as Kling's image-to-video      */
+/* consistency input so the same face survives across shots.                   */
+/*                                                                            */
+/* A table rather than a text[] on `characters` for two reasons. The upload    */
+/* goes straight from the browser to Storage on a presigned URL, so the server */
+/* never sees the bytes and has to record what it verified out-of-band —       */
+/* content type and size need somewhere to live. And "canonical set" is a flag */
+/* the app maintains, not a slice computed at every read site.                 */
+/* -------------------------------------------------------------------------- */
+
+export const characterReferenceImages = pgTable(
+  'character_reference_images',
+  {
+    id: id(),
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    /** `bucket/path`, matching `assets.storage_path`. */
+    storagePath: text('storage_path').notNull(),
+    /** Verified server-side after upload, not taken from the client's word. */
+    contentType: text('content_type').notNull(),
+    bytes: integer('bytes').notNull(),
+    orderIndex: integer('order_index').notNull(),
+    /**
+     * Whether this still is part of the canonical set fed to Kling.
+     *
+     * Maintained by the app: the first CANONICAL_REFERENCE_SET_SIZE images by
+     * order_index are flagged once a character has at least that many, and none
+     * are flagged below it. Stored rather than derived so the generation job can
+     * read the set with a single indexed predicate. The rule itself lives in
+     * lib/characters/references.ts.
+     */
+    isCanonical: boolean('is_canonical').notNull().default(false),
+    ...timestamps,
+  },
+  (t) => [
+    index('character_reference_images_character_order_idx').on(t.characterId, t.orderIndex),
+    // The generation job's lookup: this character's canonical stills, nothing else.
+    index('character_reference_images_canonical_idx')
+      .on(t.characterId)
+      .where(sql`is_canonical`),
+    // Attaching the same object twice would silently double a character's
+    // weighting in the canonical set.
+    unique('character_reference_images_path_uq').on(t.characterId, t.storagePath),
+    // The max-5 rule, structurally: MAX_REFERENCE_IMAGES in
+    // lib/characters/references.ts, written here as a literal because a
+    // migration cannot import TypeScript. The route returns a 400 long before
+    // this fires; the constraint is what makes the rule true of the data
+    // regardless of who is writing.
+    check('character_reference_images_order_bounds', sql`order_index between 0 and 4`),
+    ownerPolicy(
+      'character_reference_images_owner_all',
+      ownsCharacter('character_reference_images.character_id'),
+    ),
+  ],
+).enableRLS();
+
+/* -------------------------------------------------------------------------- */
 /* episodes                                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -200,7 +297,28 @@ export const episodes = pgTable(
     synopsis: text('synopsis').notNull().default(''),
     hook: text('hook'),
     cliffhanger: text('cliffhanger'),
+    /**
+     * The screenplay as written, before anything interpreted it.
+     *
+     * Kept alongside the structured `script` rather than replaced by it: the
+     * breakdown is a lossy reading of this text, so re-running it — or running a
+     * better one later — needs the original, not the last interpretation of it.
+     * Null for episodes whose script was generated rather than brought.
+     */
+    scriptText: text('script_text'),
     script: jsonb('script'),
+    /**
+     * The assembled episode, as `bucket/path`.
+     *
+     * Duplicated from the latest successful `renders` row on purpose. `renders`
+     * is the attempt log — several rows per episode, most of them failed or
+     * superseded — and "where is this episode's video" should not require
+     * knowing that, nor a scan to find the newest ready one. This is the
+     * answer; the log is the history.
+     */
+    outputStoragePath: text('output_storage_path'),
+    /** Length of the assembled episode, in seconds. Null until one exists. */
+    durationSeconds: integer('duration_seconds'),
     status: episodeStatus('status').notNull().default('draft'),
     ...timestamps,
   },
@@ -254,13 +372,38 @@ export const shots = pgTable(
       onDelete: 'set null',
     }),
     characterIds: uuid('character_ids').array().notNull().default(sql`'{}'::uuid[]`),
+    /**
+     * Names the script used that no Character in this series answers to.
+     *
+     * A script breakdown routinely names people the cast list does not have —
+     * a walk-on, a voice on a phone, a spelling that drifted. Dropping them
+     * silently was the tempting option and the wrong one: the shot then claims
+     * nobody is in it, and the user has no way to find out that a character was
+     * lost. Kept here so the UI can offer to link or create them.
+     */
+    unmatchedCharacters: text('unmatched_characters')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     imagePrompt: text('image_prompt'),
     videoPrompt: text('video_prompt'),
     negativePrompt: text('negative_prompt'),
     /** User edit of video_prompt. Survives storyboard regeneration (Phase 2). */
     promptOverride: text('prompt_override'),
     status: shotStatus('status').notNull().default('pending'),
+    /** Automatic retries inside the *current* version. Reset when a version is. */
     retryCount: integer('retry_count').notNull().default(0),
+    /**
+     * Which take of this shot is current.
+     *
+     * Distinct from `retry_count`, and the distinction is load-bearing. A retry
+     * is the same take attempted again after something went wrong, and it
+     * overwrites; a version is a *new* take the user asked for because they did
+     * not like the last one, and it must not. Only the version-bumping path
+     * keeps history, which is why regenerating is a different endpoint from
+     * generating.
+     */
+    version: integer('version').notNull().default(1),
     ...timestamps,
   },
   (t) => [
@@ -274,6 +417,23 @@ export const shots = pgTable(
 
 /* -------------------------------------------------------------------------- */
 /* assets                                                                     */
+/*                                                                            */
+/* One row per outbound generation call — this is the GenerationJob record.    */
+/* It is named `assets` because a successful job *is* its output; splitting    */
+/* "the job" from "the file it produced" would mean two rows that are always   */
+/* created and deleted together.                                              */
+/*                                                                            */
+/*   shot id           shot_id                                                */
+/*   provider          provider                                               */
+/*   external job id   provider_job_id   (the fal.ai request id, from Phase 4) */
+/*   status            status                                                 */
+/*   error message     error                                                  */
+/*   cost              cost_cents                                             */
+/*   timestamps        created_at / updated_at                                */
+/*   output video URL  storage_path      (our copy, never the provider's CDN)  */
+/*                                                                            */
+/* A shot's current video is therefore its latest ready video asset, not a     */
+/* column on `shots` — which is what lets Phase 4 keep prior versions.         */
 /* -------------------------------------------------------------------------- */
 
 export const assets = pgTable(
@@ -286,6 +446,14 @@ export const assets = pgTable(
       .references(() => episodes.id, { onDelete: 'cascade' }),
     kind: assetKind('kind').notNull(),
     provider: text('provider').notNull(),
+    /**
+     * The take this output belongs to, matching `shots.version`.
+     *
+     * Assets are never updated across versions — a regeneration writes new rows
+     * — so this is what makes "keep the last three takes and prune the rest" a
+     * query rather than a guess about storage paths.
+     */
+    version: integer('version').notNull().default(1),
     providerJobId: text('provider_job_id'),
     storagePath: text('storage_path'),
     durationSeconds: integer('duration_seconds'),
@@ -298,6 +466,8 @@ export const assets = pgTable(
   (t) => [
     index('assets_shot_id_idx').on(t.shotId),
     index('assets_episode_id_idx').on(t.episodeId),
+    // The version-history read, and the prune's "which takes are old" scan.
+    index('assets_shot_version_idx').on(t.shotId, t.kind, t.version),
     ownerPolicy('assets_owner_all', ownsEpisode('assets.episode_id')),
   ],
 ).enableRLS();
@@ -382,6 +552,67 @@ export const listings = pgTable(
 ).enableRLS();
 
 /* -------------------------------------------------------------------------- */
+/* runs                                                                       */
+/*                                                                            */
+/* One unattended prompt-to-film run.                                         */
+/*                                                                            */
+/* The series, episodes, scenes and shots a run produces are ordinary rows —   */
+/* a run is not a container for them, it is the record of the attempt that     */
+/* made them. So a run can fail at stage four and leave three stages' worth of */
+/* perfectly good work behind, editable by hand exactly as if it had been made */
+/* that way. That is the whole reason the autorun sits *on top of* the phased  */
+/* pipeline instead of replacing it.                                          */
+/* -------------------------------------------------------------------------- */
+
+export const runs = pgTable(
+  'runs',
+  {
+    id: id(),
+    userId: uuid('user_id').notNull(),
+    /**
+     * Null until the bible stage creates it. A run is started from a prompt
+     * alone, and the series is its first output rather than its input.
+     */
+    seriesId: uuid('series_id').references(() => series.id, { onDelete: 'cascade' }),
+
+    /** The one thing the user actually typed. */
+    prompt: text('prompt').notNull(),
+    /** How long the finished film should be. Drives the shot budget and estimate. */
+    targetSeconds: integer('target_seconds').notNull().default(180),
+
+    stage: runStage('stage').notNull().default('bible'),
+    status: runStatus('status').notNull().default('pending'),
+
+    /**
+     * When the current gate stops waiting and continues on its own.
+     *
+     * Null whenever the run is not at a gate. This is what makes the gates
+     * *skippable* rather than blocking: walk away and the film still gets made;
+     * stay and you get a window to stop a wrong premise before it is baked into
+     * thirty clips.
+     */
+    gateExpiresAt: timestamp('gate_expires_at', { withTimezone: true }),
+
+    /** Quoted before the run starts, from the target length alone. */
+    estimateCents: integer('estimate_cents').notNull().default(0),
+    /** Summed from usage_log as stages complete. */
+    spentCents: integer('spent_cents').notNull().default(0),
+
+    error: text('error'),
+    /** Per-stage results — counts, ids, diffs — for the progress view. */
+    meta: jsonb('meta'),
+    ...timestamps,
+  },
+  (t) => [
+    index('runs_user_created_idx').on(t.userId, t.createdAt),
+    index('runs_series_id_idx').on(t.seriesId),
+    // The supervisor's "is anything waiting on me" scan.
+    index('runs_status_idx').on(t.status),
+    ownerPolicy('runs_owner_all', sql.raw(`runs.user_id = ${UID}`)),
+  ],
+).enableRLS();
+
+/* -------------------------------------------------------------------------- */
 /* usage_log                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -458,6 +689,8 @@ export type Series = typeof series.$inferSelect;
 export type NewSeries = typeof series.$inferInsert;
 export type Character = typeof characters.$inferSelect;
 export type NewCharacter = typeof characters.$inferInsert;
+export type CharacterReferenceImage = typeof characterReferenceImages.$inferSelect;
+export type NewCharacterReferenceImage = typeof characterReferenceImages.$inferInsert;
 export type Episode = typeof episodes.$inferSelect;
 export type NewEpisode = typeof episodes.$inferInsert;
 export type Scene = typeof scenes.$inferSelect;
@@ -472,4 +705,8 @@ export type UsageLogRow = typeof usageLog.$inferSelect;
 export type NewUsageLogRow = typeof usageLog.$inferInsert;
 export type Listing = typeof listings.$inferSelect;
 export type NewListing = typeof listings.$inferInsert;
+export type Run = typeof runs.$inferSelect;
+export type NewRun = typeof runs.$inferInsert;
+export type RunStage = (typeof runStage.enumValues)[number];
+export type RunStatus = (typeof runStatus.enumValues)[number];
 export type RateLimitRow = typeof rateLimits.$inferSelect;

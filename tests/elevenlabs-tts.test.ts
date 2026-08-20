@@ -254,4 +254,67 @@ describe('listVoices', () => {
     mockFetch({ ok: false, status: 500, body: {} });
     await expect(new ElevenLabsTtsProvider().listVoices()).rejects.toThrow(/voice list failed/);
   });
+
+  /**
+   * Library voices — ones added from the shared library, marked by a non-null
+   * `sharing` — need a paid plan to synthesise through the API. The refusal
+   * arrives per line at the voice stage, long after casting, so a character cast
+   * on one is mute for the whole film while the rest of the cast is fine. That
+   * happened: three of four characters in a real run came out silent.
+   */
+  const catalogue = {
+    voices: [
+      { voice_id: 'v_builtin', name: 'Sarah', category: 'premade', sharing: null },
+      { voice_id: 'v_own', name: 'Esther', category: 'generated', sharing: null },
+      { voice_id: 'v_library', name: 'Jameson', category: 'professional', sharing: { status: 'enabled' } },
+    ],
+  };
+
+  it('casts only from voices that work on any plan', async () => {
+    delete process.env.ELEVENLABS_ALLOW_LIBRARY_VOICES;
+    mockFetch({ body: catalogue });
+
+    const voices = await new ElevenLabsTtsProvider().listVoices();
+
+    expect(voices.map((v) => v.id)).toEqual(['v_builtin', 'v_own']);
+  });
+
+  it('includes library voices when the plan is known to allow them', async () => {
+    process.env.ELEVENLABS_ALLOW_LIBRARY_VOICES = '1';
+    mockFetch({ body: catalogue });
+
+    const voices = await new ElevenLabsTtsProvider().listVoices();
+
+    expect(voices.map((v) => v.id)).toContain('v_library');
+  });
+
+  it('would rather try a library voice than cast nobody', async () => {
+    delete process.env.ELEVENLABS_ALLOW_LIBRARY_VOICES;
+    mockFetch({
+      body: { voices: [{ voice_id: 'v_library', name: 'Jameson', sharing: { status: 'enabled' } }] },
+    });
+
+    // An account whose voices are *all* from the library would otherwise cast
+    // nobody and produce a silent film — worse than a clear refusal.
+    const voices = await new ElevenLabsTtsProvider().listVoices();
+    expect(voices.map((v) => v.id)).toEqual(['v_library']);
+  });
+
+  it('explains a library-voice refusal instead of quoting JSON at the user', async () => {
+    mockFetch({
+      ok: false,
+      status: 402,
+      body: {
+        detail: {
+          type: 'payment_required',
+          code: 'paid_plan_required',
+          message: 'Free users cannot use library voices via the API.',
+        },
+      },
+    });
+
+    await expect(
+      new ElevenLabsTtsProvider().synthesize({ text: 'You died in March.', voiceId: 'v_library' }),
+    ).rejects.toThrow(/shared voice library.*paid plan/is);
+  });
 });

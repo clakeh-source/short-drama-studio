@@ -44,6 +44,17 @@ export function delay(ms: number): Promise<void> {
 export const FAIL_MARKER = '[[stub:fail]]';
 export const FAIL_PERMANENT_MARKER = '[[stub:fail-permanent]]';
 
+/**
+ * Makes the language-model stub answer with prose instead of JSON.
+ *
+ * A different failure from the two above, and one no amount of provider-level
+ * retrying fixes: the call *succeeds*, is billed, and returns something that
+ * will never satisfy the schema. It is the realistic bad day for a model asked
+ * for structured output, and the only way to exercise the "reject, surface the
+ * raw output, persist nothing" path without a real model having a bad day.
+ */
+export const MALFORMED_MARKER = '[[stub:malformed]]';
+
 export type StubFailure = { error: string; retryable: boolean } | null;
 
 export function failureFor(text: string): StubFailure {

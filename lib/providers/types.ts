@@ -163,8 +163,39 @@ export interface VideoGenInput {
   durationSeconds: number;
   aspectRatio: '9:16';
   seed?: number;
-  /** For character consistency, where the provider supports it. */
-  referenceImageUrl?: string;
+  /**
+   * Stills of the characters in this shot, for character consistency.
+   *
+   * An ordered set rather than one image: a shot can hold two people, and each
+   * of them contributes their canonical reference set. Order is meaningful —
+   * the first entry is the one an adapter sends when its model conditions on a
+   * single image, so callers put the most important character first.
+   *
+   * Present and non-empty is what makes a call image-to-video; empty or absent
+   * is text-to-video. Adapters must not invent a reference from the prompt.
+   */
+  referenceImageUrls?: string[];
+  /**
+   * The same stills, grouped by which person is in them.
+   *
+   * `referenceImageUrls` is the flat form, and flat is lossy: three angles of
+   * one person and one angle each of three people are the same list. A model
+   * that can hold several identities at once needs to be told which face is
+   * which, and this is that shape. Ordered by billing, like the flat list.
+   *
+   * Optional and additive — an adapter whose model conditions on a single image
+   * ignores it and reads `referenceImageUrls`, which stays the field that
+   * decides image-to-video versus text-to-video.
+   */
+  castReferences?: VideoCastReference[];
+}
+
+/** One character and the stills that establish their face. */
+export interface VideoCastReference {
+  /** As written in the script, so it can be found in the prompt. */
+  name: string;
+  /** Canonical stills, best view first. */
+  urls: string[];
 }
 
 export interface VideoProvider {
@@ -175,9 +206,115 @@ export interface VideoProvider {
    * real grid rather than discovering it at generation time.
    */
   clampDuration(seconds: number): number;
+  /**
+   * How many characters this provider can hold by their own face in one clip.
+   *
+   * Declared rather than inferred, for the same reason `ImageProvider` declares
+   * `identityCapacity`: a cast sent to a model that cannot read it produces
+   * exactly the drift the references exist to remove, and the result is
+   * indistinguishable from one that worked until the faces change. Zero means
+   * the adapter conditions on the start frame alone.
+   */
+  readonly castCapacity: number;
   estimateCostCents(input: VideoGenInput): number;
-  generate(input: VideoGenInput): Promise<{ providerJobId: string }>;
+  /**
+   * `meta` is whatever the adapter knows about the request it just made and the
+   * caller cannot work out for itself — how much of the cast the model will
+   * actually hold, which names it had to introduce. Recorded on the asset, so
+   * "what was this clip conditioned on" stays answerable months later.
+   */
+  generate(input: VideoGenInput): Promise<{
+    providerJobId: string;
+    meta?: Record<string, unknown>;
+  }>;
   poll(providerJobId: string): Promise<ProviderResult>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Image                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface ImageGenInput {
+  prompt: string;
+  negativePrompt?: string;
+  /** How many images to produce from this one prompt. */
+  count: number;
+  /**
+   * Vertical by default, matching the video frame.
+   *
+   * A reference still that is landscape while every clip is 9:16 teaches the
+   * video model the wrong framing for the character.
+   */
+  aspectRatio: '9:16' | '1:1';
+  /**
+   * Fixed across a character's stills so they read as the same person.
+   *
+   * The weak form of identity. A diffusion model given one seed and three
+   * framing instructions produces three *related* images, not three photographs
+   * of one person — it is the cheapest thing that helps, and it is what you get
+   * when the provider cannot do better.
+   */
+  seed?: number;
+
+  /**
+   * Photographs of the people this image must contain.
+   *
+   * The strong form. A non-empty set switches the adapter to an
+   * identity-preserving model, which takes the faces from these images and the
+   * pose, framing and setting from the prompt. That is the difference between a
+   * canonical set that is one character and one that is three cousins — and,
+   * for a shot keyframe, between two named people and two strangers.
+   *
+   * Ordered, and the order is meaningful: a model that accepts fewer identities
+   * than are supplied takes them from the front, so callers put the character
+   * the shot is *about* first.
+   *
+   * Must be URLs the provider can fetch — these models pull the references
+   * themselves, so signed URLs need to outlive the queue wait.
+   *
+   * Ignored by providers whose `supportsIdentity` is false. Callers check that
+   * rather than assuming, because silently dropping it would produce exactly
+   * the drift this field exists to remove, with no sign anything was wrong.
+   */
+  identityImageUrls?: string[];
+}
+
+export interface GeneratedImage {
+  url: string;
+  contentType: string;
+}
+
+export interface ImageProvider {
+  readonly id: string;
+  /**
+   * Whether `identityImageUrls` does anything here.
+   *
+   * Declared rather than inferred so a caller can *degrade deliberately* — fall
+   * back to a shared seed and record that the set is not identity-locked —
+   * instead of passing a reference into a model that ignores it and getting
+   * drift it has no way to detect.
+   */
+  readonly supportsIdentity: boolean;
+  /**
+   * How many faces this provider's model will actually read.
+   *
+   * Declared, because "we sent two references" and "it conditioned on two" are
+   * different claims and only the second one fixes a two-hander. A caller that
+   * assumed the first would report a shot as multi-character locked when the
+   * second person was still being drawn from the prompt.
+   *
+   * 1 for PuLID and InstantID; higher for multi-identity models.
+   */
+  readonly identityCapacity: number;
+  estimateCostCents(input: ImageGenInput): number;
+  /**
+   * Synchronous from the caller's point of view.
+   *
+   * Unlike video, image generation is seconds rather than minutes, so there is
+   * no durable submit/poll split to justify: a job that finishes inside one
+   * request does not need to survive a restart.
+   */
+  generate(input: ImageGenInput): Promise<{ images: GeneratedImage[]; costCents: number }>;
 }
 
 /**
