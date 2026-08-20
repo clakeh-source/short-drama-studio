@@ -5,6 +5,7 @@ import type { User } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { log } from '@/lib/log';
+import { consumeRateLimit, type RateLimitRule } from '@/lib/rate-limit';
 
 /** Uniform error envelope. Clients only ever have to parse this shape. */
 export interface ApiErrorBody {
@@ -17,6 +18,8 @@ export class ApiError extends Error {
     readonly code: string,
     message: string,
     readonly details?: unknown,
+    /** Extra response headers this error needs — `Retry-After`, so far. */
+    readonly headers?: Record<string, string>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -30,6 +33,10 @@ export const forbidden = (message = 'Forbidden') => new ApiError(403, 'forbidden
 export const conflict = (message: string) => new ApiError(409, 'conflict', message);
 export const paymentRequired = (message: string) =>
   new ApiError(402, 'spend_cap_exceeded', message);
+export const tooManyRequests = (message: string, retryAfterSeconds: number) =>
+  new ApiError(429, 'rate_limited', message, undefined, {
+    'retry-after': String(retryAfterSeconds),
+  });
 
 interface RouteConfig<TBody, TQuery> {
   /** Zod schema for the JSON body. Omit for GET/DELETE. */
@@ -40,6 +47,13 @@ interface RouteConfig<TBody, TQuery> {
   auth?: boolean;
   /** Label used in structured logs. */
   operation: string;
+  /**
+   * Per-user request ceiling. Declared by the routes that reach a provider or
+   * chew CPU; the read and poll routes deliberately go without, because the UI
+   * polls them by design and limiting them would break the thing it is meant to
+   * protect.
+   */
+  rateLimit?: RateLimitRule;
 }
 
 interface RouteContext<TBody, TQuery, TParams> {
@@ -97,6 +111,10 @@ function makeRunner<TBody, TQuery, TParams, TResult>(
     try {
       const user = config.auth === false ? (null as unknown as User) : await requireApiUser();
 
+      if (config.rateLimit && user) {
+        await enforceRateLimit(user.id, config.operation, config.rateLimit);
+      }
+
       let body = undefined as TBody;
       if (config.body) {
         let raw: unknown;
@@ -148,6 +166,26 @@ function makeRunner<TBody, TQuery, TParams, TResult>(
   };
 }
 
+/**
+ * Shared by both route wrappers. Throwing rather than returning keeps the
+ * refusal on the same path as every other rejection — one error envelope, one
+ * place that logs it.
+ */
+export async function enforceRateLimit(
+  userId: string,
+  operation: string,
+  rule: RateLimitRule,
+): Promise<void> {
+  const verdict = await consumeRateLimit(userId, operation, rule);
+  if (verdict.allowed) return;
+
+  throw tooManyRequests(
+    `Too many requests. Try again in ${verdict.retryAfterSeconds} second` +
+      `${verdict.retryAfterSeconds === 1 ? '' : 's'}.`,
+    verdict.retryAfterSeconds,
+  );
+}
+
 export function toErrorResponse(error: unknown, operation: string, durationMs: number): Response {
   if (error instanceof UnauthorizedError) {
     return NextResponse.json<ApiErrorBody>(
@@ -171,7 +209,7 @@ export function toErrorResponse(error: unknown, operation: string, durationMs: n
           ...(error.details !== undefined ? { details: error.details } : {}),
         },
       },
-      { status: error.status },
+      { status: error.status, ...(error.headers ? { headers: error.headers } : {}) },
     );
   }
 

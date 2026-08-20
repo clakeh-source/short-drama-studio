@@ -4,8 +4,9 @@ Scope: the whole application as of `fceffd3` — 18.7k lines across `app/`, `com
 `lib/` and `scripts/`. Focus on the security boundaries (auth, tenancy, secrets), the
 spend controls, and the correctness of the job pipeline.
 
-F1 through F4 have since been fixed in this branch; each carries a note saying how.
-F5 is a read of the code as it stands.
+Every finding has since been fixed in this branch, and each carries a note saying
+how. The one exception is the last item under F5, which is a property of the
+design rather than a defect — it is recorded, not changed.
 
 ## Health check
 
@@ -14,7 +15,7 @@ F5 is a read of the code as it stands.
 | `pnpm typecheck` | clean | clean |
 | `pnpm lint` | clean | clean |
 | `pnpm build` | passes | passes |
-| `pnpm test` | 332 passed, 50 skipped, **1 suite fails to collect** (see F4) | 354 passed, 57 skipped, 0 failed |
+| `pnpm test` | 332 passed, 50 skipped, **1 suite fails to collect** (see F4) | 368 passed, 57 skipped, 0 failed |
 
 ## What holds up well
 
@@ -153,37 +154,78 @@ so collection touches no credentials. `tests/live-providers.test.ts` still has t
 shape; it passes only because its adapters happen not to validate in the constructor, and
 it is worth converting the next time it is touched.
 
-### F5 — Minor issues
+### F5 — Minor issues — fixed
 
-- **`POST /api/series/[id]/music` leaks internal error text.** Its hand-written catch
-  (`route.ts:89-97`) returns `String(error.message)` for any error, so a database or storage
-  failure surfaces its message to the client with an HTTP 500 — the one route that does not
-  go through `toErrorResponse`, which exists precisely to prevent that. It also awaits
-  `request.formData()` (buffering the whole body) before checking the 20MB limit.
-- **`POST /api/script-import/parse` has no bound on the JSON path.** The upload path caps at
-  2MB (`MAX_UPLOAD_BYTES`); the `{ text }` path accepts an arbitrarily large string and
-  hands it straight to the regex-heavy `parseScriptText`. A `z.string().max(…)` closes it.
-- **The episode-level idempotency key is inert.** `episodeGenerateEventId` documents that a
-  double-clicked Generate "cannot enqueue the episode twice", but the only caller
-  (`components/generation/generation-panel.tsx:115`) mints
-  `episode-${id}-${Date.now()}` fresh on every click, so no two requests ever share a key.
-  The protection that actually works is the per-shot `shotVideoEventId(shotId, attempt)`
-  dedup during fan-out — no double spend occurs, but the comment describes a guarantee the
-  code does not provide. Either derive the key from something stable or drop the claim.
-- **SSE routes return a 500 with an "unauthorized" body.** `lib/api/sse.ts:62-66` maps any
-  non-`UnauthorizedError` failure to status 500 while sending the "Not signed in" envelope,
-  so a client branching on the body sees an auth failure for what may be an infrastructure
-  one.
-- **No security response headers.** `next.config.ts` sets no CSP, HSTS, `X-Frame-Options`,
-  `X-Content-Type-Options` or `Referrer-Policy`. A `headers()` block is cheap here — the app
-  loads no third-party scripts, so a strict CSP would not fight anything.
-- **No rate limiting anywhere.** Every route is one authenticated request away from a
-  provider call. This is what makes F1 expensive rather than merely untidy.
+- **`POST /api/series/[id]/music` leaked internal error text.** Its hand-written catch
+  returned `String(error.message)` for anything it caught, so a database or storage failure
+  handed its message to the client under an HTTP 500 — the one route that escaped
+  `toErrorResponse`, which exists to stop exactly that. It also awaited `request.formData()`,
+  buffering the whole body, before checking the 20MB limit.
+  **Fixed.** It runs on `dynamicRoute` now: the wrapper only touches the body when a Zod
+  schema is configured, so a multipart route can use it and still read the form itself. The
+  declared `content-length` is checked before the body is buffered, and `file.size` is still
+  checked afterwards, because the header can lie.
+- **`POST /api/script-import/parse` had no bound on the JSON path.** The upload path capped
+  at 2MB; the `{ text }` path took an arbitrarily large string and handed it to a regex pass
+  over every line.
+  **Fixed.** `MAX_PASTED_CHARS` applies the same ceiling to pasted text, with a message that
+  says what the limit is.
+- **The episode-level idempotency key was inert.** `episodeGenerateEventId` documented that
+  a double-clicked Generate "cannot enqueue the episode twice", but it fell back to
+  `Date.now()` and its only caller minted a fresh `episode-<id>-<Date.now()>` header on every
+  click — so no two requests ever shared a key and the dedup never once applied. No double
+  spend occurred, because the per-shot event ids dedup during fan-out; the stated guarantee
+  was simply not the one being provided.
+  **Fixed.** `shotSetFingerprint` hashes the shots a request would enqueue, each with the
+  attempt it would run as. Two clicks on the same pending shots are one event; a retry
+  advances an attempt, which changes the fingerprint and goes through. The client no longer
+  sends a per-click header, and an explicit `idempotency-key` still wins for callers that
+  want to pin a retry themselves.
+- **SSE routes returned a 500 with an "unauthorized" body.** Any non-`UnauthorizedError`
+  failure got status 500 and the "Not signed in" envelope, so a client branching on the body
+  was told to sign in again for what may have been the auth server being unreachable.
+  **Fixed.** The wrapper hands the error to `toErrorResponse`, the same mapper every JSON
+  route uses.
+- **No security response headers.**
+  **Fixed.** `next.config.ts` sets the fixed ones — `X-Frame-Options`,
+  `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy` and HSTS. The CSP carries
+  a per-request nonce, so it is built in `lib/security-headers.ts` and set in middleware,
+  which also forwards the nonce to Next's renderer. `script-src` is `'self' 'nonce-…'
+  'strict-dynamic'` — no `'unsafe-inline'`, which is the point of doing it with a nonce at
+  all; `connect-src` and `media-src` name this deployment's own Supabase origin, read from
+  the environment rather than hardcoded. `style-src` keeps `'unsafe-inline'`, which React's
+  `style` attributes and Next's hydration require.
+  Verified rather than assumed: against a production build, all 19 script tags on `/login`
+  carried the nonce, and the page loaded and hydrated in Chromium with no CSP violations.
+- **No rate limiting.**
+  **Fixed.** `lib/rate-limit.ts` counts requests per user per operation in fixed windows,
+  and `route`/`dynamicRoute`/`sseRoute` take a `rateLimit` rule. The counters live in
+  Postgres (a new `rate_limits` table, RLS on with no policy, so only the privileged handle
+  touches it) because the app is serverless and an in-process counter is per-instance —
+  which is to say per concurrent request, under exactly the load a limiter is for. It never
+  throws: if its own table is unreachable the request is allowed and the failure logged,
+  because a limiter that takes the app down has done more damage than the traffic it was
+  shaping.
+  Declared on the thirteen routes that reach a provider or chew CPU. The read and poll
+  routes deliberately go without: the generation UI polls them by design, and limiting them
+  would break the thing the limit is meant to protect.
 - **The spend cap is per-user but configured globally.** `MAX_MONTHLY_SPEND_CENTS` is one
   env value applied to each user independently, so total exposure is *users × cap*, not
-  `cap`. Fine for a single-operator deployment; worth knowing before opening signups.
+  `cap`. **Left as is** — this is what a per-user cap means, not a defect, and it is correct
+  for a single-operator deployment. It is written down here because it is the thing to
+  revisit before opening signups, where the missing control is a global ceiling rather than
+  a per-user one.
 
-## Suggested order
+## What a follow-up should look at
 
-1. ~~F1~~, ~~F2~~, ~~F3~~, ~~F4~~ — done in this branch.
-2. F5 — batch them.
+Nothing here is outstanding. Two things this pass deliberately did not do, for
+whoever picks it up next:
+
+- **`tests/live-providers.test.ts` still builds its providers eagerly.** It passes
+  only because those adapters happen not to validate credentials in the
+  constructor — the same shape that made F4 fail. Worth converting the next time
+  it is touched.
+- **A corrective retry inside `streamJson` can carry one generation a single
+  attempt past the spend cap**, the same latitude a video job already running
+  gets. Closing it means checking the cap per attempt rather than per request,
+  which is a different design decision rather than a fix.

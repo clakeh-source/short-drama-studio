@@ -6,6 +6,7 @@ import { withUserDb } from '@/lib/db';
 import { series } from '@/lib/db/schema';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Creates a series from a premise.
@@ -15,7 +16,7 @@ import { recordUsage } from '@/lib/usage';
  * nothing else.
  */
 export const POST = route(
-  { operation: 'series.create', body: createSeriesInputSchema },
+  { operation: 'series.create', body: createSeriesInputSchema, rateLimit: RATE_LIMITS.model },
   async ({ body, user }) => {
     const provider = getLlmProvider();
 

@@ -7,6 +7,7 @@ import { loadEpisode, parseBible, parseScript, persistScript } from '@/lib/data/
 import { estimateScriptSeconds } from '@/lib/timing';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 const bodySchema = z.object({
   note: z.string().max(500).optional(),
@@ -23,6 +24,7 @@ export const POST = sseRoute<{ id: string; index: string }, z.infer<typeof bodyS
   {
     operation: 'script.regenerate_scene',
     body: bodySchema,
+    rateLimit: RATE_LIMITS.model,
     preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'script.regenerate_scene'),
   },
   async ({ body, params, user, send }) => {

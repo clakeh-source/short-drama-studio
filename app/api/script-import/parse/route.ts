@@ -1,6 +1,7 @@
 import { badRequest, route } from '@/lib/api/handler';
-import { extractText } from '@/lib/script-import/extract';
+import { extractText, MAX_PASTED_CHARS } from '@/lib/script-import/extract';
 import { parseScriptText } from '@/lib/script-import/parse';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Normalises a pasted or uploaded script and hands back the structure.
@@ -13,7 +14,9 @@ import { parseScriptText } from '@/lib/script-import/parse';
  * input paths in the UI produce genuinely different request shapes and forcing
  * the client to base64 a .docx into JSON would be worse than branching here.
  */
-export const POST = route({ operation: 'script.import_parse' }, async ({ request }) => {
+export const POST = route(
+  { operation: 'script.import_parse', rateLimit: RATE_LIMITS.upload },
+  async ({ request }) => {
   const contentType = request.headers.get('content-type') ?? '';
   let text: string;
   let filename: string | null = null;
@@ -33,6 +36,12 @@ export const POST = route({ operation: 'script.import_parse' }, async ({ request
     }
     const value = (raw as { text?: unknown })?.text;
     if (typeof value !== 'string') throw badRequest('Send the script as `text`.');
+    if (value.length > MAX_PASTED_CHARS) {
+      throw badRequest(
+        `That script is ${(value.length / 1024 / 1024).toFixed(1)}MB of text; the limit is ` +
+          `${MAX_PASTED_CHARS / 1024 / 1024}MB. A feature-length screenplay is well under it.`,
+      );
+    }
     text = value;
   }
 

@@ -10,6 +10,7 @@ import { persistBible, persistScript } from '@/lib/data/series';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
 import { eq } from 'drizzle-orm';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Commits a script the user brought, and everything the pipeline needs to shoot
@@ -49,6 +50,7 @@ export const POST = sseRoute<Record<string, never>, ReturnType<typeof importScri
   {
     operation: 'series.import',
     body: importScriptInputSchema,
+    rateLimit: RATE_LIMITS.model,
     // Both calls up front: a screening that lands the user on the cap would
     // leave them paying for a verdict on a script that then cannot be imported.
     preflight: ({ body, user }) =>

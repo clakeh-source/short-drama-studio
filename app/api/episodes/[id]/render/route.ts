@@ -4,6 +4,7 @@ import { loadEpisode } from '@/lib/data/series';
 import { episodeRenderEventId, inngest } from '@/lib/inngest/client';
 import { getRenderProvider } from '@/lib/providers';
 import { checkSpend } from '@/lib/spend';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Starts a render.
@@ -14,7 +15,7 @@ import { checkSpend } from '@/lib/spend';
  * Inngest event while a double-click dedupes.
  */
 export const POST = dynamicRoute<{ id: string }>(
-  { operation: 'episode.render' },
+  { operation: 'episode.render', rateLimit: RATE_LIMITS.job },
   async ({ params, user }) => {
     /**
      * Ownership first, and only then anything else.

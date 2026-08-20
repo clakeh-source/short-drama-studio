@@ -7,11 +7,13 @@ import { persistStoryboard } from '@/lib/data/storyboard';
 import { shotDurationDrift } from '@/lib/shots';
 import { getLlmProvider, getVideoProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /** Breaks the episode script into shots, streamed to the client. */
 export const POST = sseRoute<{ id: string }>(
   {
     operation: 'storyboard.generate',
+    rateLimit: RATE_LIMITS.model,
     preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'storyboard.generate'),
   },
   async ({ params, user, send }) => {

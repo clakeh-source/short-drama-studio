@@ -2,9 +2,10 @@ import 'server-only';
 
 import type { User } from '@supabase/supabase-js';
 import { z } from 'zod';
-import { requireApiUser, UnauthorizedError } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 import { log } from '@/lib/log';
-import { ApiError, toErrorResponse } from './handler';
+import type { RateLimitRule } from '@/lib/rate-limit';
+import { ApiError, enforceRateLimit, toErrorResponse } from './handler';
 
 /**
  * Server-sent-events wrapper for the generation routes.
@@ -26,6 +27,8 @@ export type SseSend = (event: 'delta' | 'status' | 'done' | 'error', data: unkno
 interface SseRouteConfig<TBody, TParams> {
   operation: string;
   body?: z.ZodType<TBody>;
+  /** Per-user request ceiling; see the note on `RouteConfig.rateLimit`. */
+  rateLimit?: RateLimitRule;
   /**
    * Runs after validation but before the stream opens, for checks whose answer
    * is "do not start at all" — the spend cap being the reason this exists.
@@ -75,11 +78,21 @@ export function sseRoute<
     try {
       user = await requireApiUser();
     } catch (error) {
-      const status = error instanceof UnauthorizedError ? 401 : 500;
-      return Response.json(
-        { error: { code: 'unauthorized', message: 'Not signed in' } },
-        { status },
-      );
+      /**
+       * Whatever this was, it gets the envelope it deserves. The old version
+       * sent the "Not signed in" body with a 500 whenever the failure was not
+       * an `UnauthorizedError` — so a client branching on the body was told to
+       * sign in again for what was actually the auth server being unreachable.
+       */
+      return toErrorResponse(error, config.operation, Date.now() - start);
+    }
+
+    if (config.rateLimit) {
+      try {
+        await enforceRateLimit(user.id, config.operation, config.rateLimit);
+      } catch (error) {
+        return toErrorResponse(error, config.operation, Date.now() - start);
+      }
     }
 
     let body = undefined as TBody;

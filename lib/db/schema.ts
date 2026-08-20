@@ -424,6 +424,33 @@ export const usageLog = pgTable(
 ).enableRLS();
 
 /* -------------------------------------------------------------------------- */
+/* rate_limits                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Fixed-window request counters, one row per user per operation per window.
+ *
+ * Server-side state rather than in-memory, because the app runs as serverless
+ * functions: an in-process counter would be per-instance, which is to say per
+ * concurrent request under exactly the load a limiter exists for.
+ *
+ * RLS is on with no policy at all, which denies `authenticated` everything.
+ * That is deliberate — nothing user-facing reads or writes this; it is touched
+ * only through the privileged handle, the way the job tables are.
+ */
+export const rateLimits = pgTable(
+  'rate_limits',
+  {
+    /** `{userId}:{operation}:{windowStartEpochSeconds}` — built by lib/rate-limit.ts. */
+    key: text('key').primaryKey(),
+    count: integer('count').notNull().default(0),
+    /** Start of the window this row counts, and what the sweeper prunes on. */
+    windowStart: timestamp('window_start', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('rate_limits_window_start_idx').on(t.windowStart)],
+).enableRLS();
+
+/* -------------------------------------------------------------------------- */
 /* Inferred row types                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -445,3 +472,4 @@ export type UsageLogRow = typeof usageLog.$inferSelect;
 export type NewUsageLogRow = typeof usageLog.$inferInsert;
 export type Listing = typeof listings.$inferSelect;
 export type NewListing = typeof listings.$inferInsert;
+export type RateLimitRow = typeof rateLimits.$inferSelect;

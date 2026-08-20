@@ -6,11 +6,13 @@ import { loadSeries } from '@/lib/data/series';
 import { persistBible } from '@/lib/data/series';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /** Generates (or regenerates) the series bible, streamed to the client. */
 export const POST = sseRoute<{ id: string }>(
   {
     operation: 'bible.generate',
+    rateLimit: RATE_LIMITS.model,
     preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'bible.generate'),
   },
   async ({ params, user, send }) => {

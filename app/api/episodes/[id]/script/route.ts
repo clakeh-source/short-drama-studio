@@ -11,11 +11,13 @@ import {
 import { driftFromTarget, estimateScriptSeconds } from '@/lib/timing';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /** Writes (or rewrites) the whole episode script, streamed to the client. */
 export const POST = sseRoute<{ id: string }>(
   {
     operation: 'script.generate',
+    rateLimit: RATE_LIMITS.model,
     preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'script.generate'),
   },
   async ({ params, user, send }) => {

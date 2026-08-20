@@ -8,6 +8,7 @@ import { inngest, shotVideoEventId, shotVoiceEventId } from '@/lib/inngest/clien
 import { getTtsProvider, getVideoProvider } from '@/lib/providers';
 import { checkSpend } from '@/lib/spend';
 import { scenes } from '@/lib/db/schema';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Generates (or retries) a single shot — the manual "retry this shot" the spec
@@ -18,7 +19,7 @@ import { scenes } from '@/lib/db/schema';
  * request is not deduplicated against the failed one.
  */
 export const POST = dynamicRoute<{ id: string }>(
-  { operation: 'shot.generate' },
+  { operation: 'shot.generate', rateLimit: RATE_LIMITS.job },
   async ({ params, user }) => {
     const prepared = await withUserDb(user.id, async (tx) => {
       const [shot] = await tx.select().from(shots).where(eq(shots.id, params.id));
