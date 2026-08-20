@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { POLL_CEILING_MS, pollSchedule, scheduleTotalMs, toSleepDuration } from '@/lib/inngest/backoff';
 import {
   episodeGenerateEventId,
+  shotSetFingerprint,
   shotVideoEventId,
   shotVoiceEventId,
 } from '@/lib/inngest/client';
@@ -83,10 +84,39 @@ describe('idempotency keys', () => {
     );
   });
 
-  it('without a key, two requests are allowed to differ', () => {
-    // No key means the caller has not promised idempotency, so we must not
-    // silently swallow their second request.
-    expect(episodeGenerateEventId('ep-1', null)).toMatch(/^episode-generate:ep-1:/);
+  it('without a caller key, the shot set is the key', () => {
+    /**
+     * The fallback used to be `Date.now()`, which meant no two requests could
+     * ever share an id — the dedup was documented and never applied. The shot
+     * set plus each shot's attempt is the thing that actually distinguishes "the
+     * user clicked twice" from "the user is retrying".
+     */
+    const pending = [
+      { id: 'shot-2', retryCount: 0 },
+      { id: 'shot-1', retryCount: 0 },
+    ];
+
+    // Same work, ordered differently: the same event, so the second is dropped.
+    expect(shotSetFingerprint(pending)).toBe(
+      shotSetFingerprint([...pending].reverse()),
+    );
+
+    // A shot that has been retried is different work, and must get through.
+    expect(shotSetFingerprint(pending)).not.toBe(
+      shotSetFingerprint([
+        { id: 'shot-1', retryCount: 1 },
+        { id: 'shot-2', retryCount: 0 },
+      ]),
+    );
+
+    // And a different set of shots is a different request.
+    expect(shotSetFingerprint(pending)).not.toBe(
+      shotSetFingerprint([{ id: 'shot-1', retryCount: 0 }]),
+    );
+
+    expect(episodeGenerateEventId('ep-1', shotSetFingerprint(pending))).toMatch(
+      /^episode-generate:ep-1:[0-9a-f]{32}$/,
+    );
   });
 });
 

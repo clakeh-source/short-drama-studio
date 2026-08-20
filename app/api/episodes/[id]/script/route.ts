@@ -1,5 +1,6 @@
 import { badRequest } from '@/lib/api/handler';
 import { sseRoute } from '@/lib/api/sse';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { generateScript } from '@/lib/ai/script';
 import {
   loadContinuitySummary,
@@ -10,10 +11,15 @@ import {
 import { driftFromTarget, estimateScriptSeconds } from '@/lib/timing';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /** Writes (or rewrites) the whole episode script, streamed to the client. */
 export const POST = sseRoute<{ id: string }>(
-  { operation: 'script.generate' },
+  {
+    operation: 'script.generate',
+    rateLimit: RATE_LIMITS.model,
+    preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'script.generate'),
+  },
   async ({ params, user, send }) => {
     const { episode, series } = await loadEpisode(user.id, params.id);
 

@@ -4,6 +4,7 @@ import { getTtsProvider } from '@/lib/providers';
 import { checkSpend } from '@/lib/spend';
 import { recordUsage } from '@/lib/usage';
 import { log } from '@/lib/log';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Auditions one voice.
@@ -37,7 +38,7 @@ const bodySchema = z.object({
 const AUDITION_LINE = 'You told me he was dead. I saw the signature myself.';
 
 export const POST = dynamicRoute<Record<string, never>, z.infer<typeof bodySchema>>(
-  { operation: 'voice.preview', body: bodySchema },
+  { operation: 'voice.preview', body: bodySchema, rateLimit: RATE_LIMITS.job },
   async ({ body, user }) => {
     const provider = getTtsProvider();
 

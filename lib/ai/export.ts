@@ -2,6 +2,7 @@ import 'server-only';
 
 import { z } from 'zod';
 import type { LlmProvider } from '@/lib/providers';
+import { LLM_BUDGETS } from './budget';
 import { streamJson } from './json';
 import { inputBlock, JSON_RULES } from './prompts/rules';
 
@@ -82,7 +83,7 @@ someone watch the next one.`;
     system: SYSTEM,
     prompt,
     schema: exportCopySchema,
-    maxTokens: 8_000,
+    maxTokens: LLM_BUDGETS['export.caption'],
     effort: 'low',
   });
 }

@@ -1,6 +1,7 @@
 import { badRequest } from '@/lib/api/handler';
 import { sseRoute } from '@/lib/api/sse';
 import { deriveBibleFromScript } from '@/lib/ai/bible-from-script';
+import { assertLlmBudgetTotal } from '@/lib/ai/budget';
 import { screenContent } from '@/lib/ai/safety';
 import { importScriptInputSchema } from '@/lib/ai/schemas';
 import { withUserDb } from '@/lib/db';
@@ -9,6 +10,7 @@ import { persistBible, persistScript } from '@/lib/data/series';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
 import { eq } from 'drizzle-orm';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Commits a script the user brought, and everything the pipeline needs to shoot
@@ -22,8 +24,41 @@ import { eq } from 'drizzle-orm';
  * script costs the screening call and nothing else — the same guarantee
  * `POST /api/series` gives a refused premise.
  */
+/**
+ * Screened on dialogue and action, not the whole document: the rules care about
+ * depicted content, and a 100-page screenplay would be an expensive way to ask
+ * the same question. 8k characters is several scenes.
+ */
+const SAFETY_SAMPLE_CHARS = 8_000;
+
+/** Every line of the import, which is what the bible is derived from. */
+function scriptChars(body: ReturnType<typeof importScriptInputSchema.parse>): number {
+  return body.episodes.reduce(
+    (total, episode) =>
+      total +
+      episode.script.scenes.reduce(
+        (sceneTotal, scene) =>
+          sceneTotal +
+          scene.beats.reduce((beatTotal, beat) => beatTotal + (beat.dialogue ?? beat.action).length, 0),
+        0,
+      ),
+    0,
+  );
+}
+
 export const POST = sseRoute<Record<string, never>, ReturnType<typeof importScriptInputSchema.parse>>(
-  { operation: 'series.import', body: importScriptInputSchema },
+  {
+    operation: 'series.import',
+    body: importScriptInputSchema,
+    rateLimit: RATE_LIMITS.model,
+    // Both calls up front: a screening that lands the user on the cap would
+    // leave them paying for a verdict on a script that then cannot be imported.
+    preflight: ({ body, user }) =>
+      assertLlmBudgetTotal(user.id, getLlmProvider(), [
+        { operation: 'safety.screen', promptChars: Math.min(scriptChars(body), SAFETY_SAMPLE_CHARS) },
+        { operation: 'bible.derive', promptChars: scriptChars(body) },
+      ]),
+  },
   async ({ body, user, send }) => {
     const provider = getLlmProvider();
 
@@ -34,15 +69,10 @@ export const POST = sseRoute<Record<string, never>, ReturnType<typeof importScri
 
     send('status', { message: 'Screening the script…' });
 
-    /**
-     * Screened on dialogue and action, not the whole document: the rules care
-     * about depicted content, and a 100-page screenplay would be an expensive
-     * way to ask the same question. 8k characters is several scenes.
-     */
     const sample = body.episodes
       .flatMap((e) => e.script.scenes.flatMap((s) => s.beats.map((b) => b.dialogue ?? b.action)))
       .join('\n')
-      .slice(0, 8_000);
+      .slice(0, SAFETY_SAMPLE_CHARS);
 
     const verdict = await screenContent({ provider, text: sample });
 

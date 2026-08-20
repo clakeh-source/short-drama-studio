@@ -2,9 +2,10 @@ import 'server-only';
 
 import type { User } from '@supabase/supabase-js';
 import { z } from 'zod';
-import { requireApiUser, UnauthorizedError } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 import { log } from '@/lib/log';
-import { ApiError } from './handler';
+import type { RateLimitRule } from '@/lib/rate-limit';
+import { ApiError, enforceRateLimit, toErrorResponse } from './handler';
 
 /**
  * Server-sent-events wrapper for the generation routes.
@@ -23,9 +24,27 @@ import { ApiError } from './handler';
 
 export type SseSend = (event: 'delta' | 'status' | 'done' | 'error', data: unknown) => void;
 
-interface SseRouteConfig<TBody> {
+interface SseRouteConfig<TBody, TParams> {
   operation: string;
   body?: z.ZodType<TBody>;
+  /** Per-user request ceiling; see the note on `RouteConfig.rateLimit`. */
+  rateLimit?: RateLimitRule;
+  /**
+   * Runs after validation but before the stream opens, for checks whose answer
+   * is "do not start at all" — the spend cap being the reason this exists.
+   *
+   * Anything thrown here becomes an ordinary HTTP error response. That is the
+   * whole point: once the stream is open the status is already 200, and a
+   * refusal can only be an `error` frame, which a client has to be looking for
+   * to notice. A 402 with the error envelope is something `fetch` can branch on
+   * the same way it does on every other route.
+   */
+  preflight?: (ctx: {
+    body: TBody;
+    params: TParams;
+    user: User;
+    request: Request;
+  }) => Promise<void>;
 }
 
 interface SseContext<TBody, TParams> {
@@ -47,7 +66,7 @@ export function sseRoute<
   TParams extends Record<string, string | string[]>,
   TBody = undefined,
 >(
-  config: SseRouteConfig<TBody>,
+  config: SseRouteConfig<TBody, TParams>,
   handler: (ctx: SseContext<TBody, TParams>) => Promise<void>,
 ) {
   return async (request: Request, context: { params: Promise<TParams> }): Promise<Response> => {
@@ -59,11 +78,21 @@ export function sseRoute<
     try {
       user = await requireApiUser();
     } catch (error) {
-      const status = error instanceof UnauthorizedError ? 401 : 500;
-      return Response.json(
-        { error: { code: 'unauthorized', message: 'Not signed in' } },
-        { status },
-      );
+      /**
+       * Whatever this was, it gets the envelope it deserves. The old version
+       * sent the "Not signed in" body with a 500 whenever the failure was not
+       * an `UnauthorizedError` — so a client branching on the body was told to
+       * sign in again for what was actually the auth server being unreachable.
+       */
+      return toErrorResponse(error, config.operation, Date.now() - start);
+    }
+
+    if (config.rateLimit) {
+      try {
+        await enforceRateLimit(user.id, config.operation, config.rateLimit);
+      } catch (error) {
+        return toErrorResponse(error, config.operation, Date.now() - start);
+      }
     }
 
     let body = undefined as TBody;
@@ -94,6 +123,14 @@ export function sseRoute<
     }
 
     const params = await context.params;
+
+    if (config.preflight) {
+      try {
+        await config.preflight({ body, params, user, request });
+      } catch (error) {
+        return toErrorResponse(error, config.operation, Date.now() - start);
+      }
+    }
 
     /**
      * Set when the browser goes away — a closed tab, a navigation, or a second

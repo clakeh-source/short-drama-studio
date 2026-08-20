@@ -8,6 +8,7 @@ import {
   scriptShape,
   TYPICAL_BEAT_SECONDS,
 } from '@/lib/timing';
+import { LLM_BUDGETS } from './budget';
 import { streamJson } from './json';
 import { sceneSchema, scriptSchema, type Bible, type Scene, type Script } from './schemas';
 import { inputBlock, JSON_RULES, SAFETY_RULES, STRUCTURE_RULES } from './prompts/rules';
@@ -120,7 +121,7 @@ Write in ${options.language}.`;
     system: SYSTEM,
     prompt,
     schema: scriptSchema,
-    maxTokens: 32_000,
+    maxTokens: LLM_BUDGETS['script.generate'],
     effort: 'low',
     // Three attempts: the duration check below is a real second chance, not a
     // formality, and the model corrects well when given the measured number.
@@ -220,7 +221,7 @@ still hits its target.${options.note ? `\n\nDIRECTION FROM THE WRITER: ${options
     system: SYSTEM,
     prompt,
     schema: sceneSchema,
-    maxTokens: 8_000,
+    maxTokens: LLM_BUDGETS['script.regenerate_scene'],
     effort: 'low',
     ...(options.onDelta ? { onDelta: options.onDelta } : {}),
   });

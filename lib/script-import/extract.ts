@@ -20,6 +20,15 @@ export const ACCEPTED_EXTENSIONS = ['.txt', '.md', '.fountain', '.docx'] as cons
  */
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 
+/**
+ * The same ceiling for pasted text.
+ *
+ * The upload path has been bounded since it was written; the JSON path took an
+ * unbounded string and handed it straight to a regex pass over every line. One
+ * request could therefore cost as much CPU as the sender cared to spend.
+ */
+export const MAX_PASTED_CHARS = MAX_UPLOAD_BYTES;
+
 function extensionOf(filename: string): string {
   const dot = filename.lastIndexOf('.');
   return dot === -1 ? '' : filename.slice(dot).toLowerCase();
