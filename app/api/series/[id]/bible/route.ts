@@ -1,4 +1,5 @@
 import { generateBible } from '@/lib/ai/bible';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { sseRoute } from '@/lib/api/sse';
 import { notFound } from '@/lib/api/handler';
 import { loadSeries } from '@/lib/data/series';
@@ -8,7 +9,10 @@ import { recordUsage } from '@/lib/usage';
 
 /** Generates (or regenerates) the series bible, streamed to the client. */
 export const POST = sseRoute<{ id: string }>(
-  { operation: 'bible.generate' },
+  {
+    operation: 'bible.generate',
+    preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'bible.generate'),
+  },
   async ({ params, user, send }) => {
     const { series: row } = await loadSeries(user.id, params.id);
     if (!row) throw notFound('Series not found');

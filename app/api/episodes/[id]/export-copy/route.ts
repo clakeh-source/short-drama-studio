@@ -1,4 +1,5 @@
 import { dynamicRoute } from '@/lib/api/handler';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { generateExportCopy } from '@/lib/ai/export';
 import { loadEpisode, parseBible } from '@/lib/data/series';
 import { getLlmProvider } from '@/lib/providers';
@@ -11,6 +12,8 @@ export const POST = dynamicRoute<{ id: string }>(
     const { episode, series } = await loadEpisode(user.id, params.id);
     const bible = parseBible(series.bible);
     const provider = getLlmProvider();
+
+    await assertLlmBudget(user.id, provider, 'export.caption');
 
     const result = await generateExportCopy({
       provider,

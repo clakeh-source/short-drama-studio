@@ -2,6 +2,7 @@ import 'server-only';
 
 import type { LlmProvider } from '@/lib/providers';
 import { log } from '@/lib/log';
+import { LLM_BUDGETS } from './budget';
 import { streamJson } from './json';
 import { safetyVerdictSchema, type SafetyVerdict } from './schemas';
 import { inputBlock, JSON_RULES } from './prompts/rules';
@@ -136,7 +137,7 @@ export async function screenContent(options: ScreenOptions): Promise<ScreenResul
       system: SYSTEM,
       prompt: `Screen this text.\n\n${inputBlock({ text: options.text })}`,
       schema: safetyVerdictSchema,
-      maxTokens: 2_000,
+      maxTokens: LLM_BUDGETS['safety.screen'],
       effort: 'low',
     });
 

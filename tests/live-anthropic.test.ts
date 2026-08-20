@@ -37,13 +37,23 @@ function bill(costCents: number) {
 }
 
 describe.skipIf(!live).sequential('live model — Phase 1 acceptance criteria', () => {
-  const provider = getLlmProvider('anthropic');
+  /**
+   * Resolved lazily, inside the tests.
+   *
+   * Vitest evaluates a `describe` body at collection time whether or not
+   * `skipIf` will go on to skip its tests, and the Anthropic adapter validates
+   * its key in the constructor. Building the provider out here therefore threw
+   * during collection on any machine without ANTHROPIC_API_KEY — which is every
+   * machine this suite is meant to skip on — and took the whole of `pnpm test`
+   * red with it.
+   */
+  const provider = () => getLlmProvider('anthropic');
 
   it(`AC #1 — a valid bible in <=2 attempts, ${BIBLE_RUNS}/${BIBLE_RUNS} runs`, async () => {
     const attemptCounts: number[] = [];
 
     for (let run = 0; run < BIBLE_RUNS; run++) {
-      const result = await generateBible({ provider, input });
+      const result = await generateBible({ provider: provider(), input });
       bill(result.usage.costCents);
       attemptCounts.push(result.attempts);
 
@@ -61,13 +71,13 @@ describe.skipIf(!live).sequential('live model — Phase 1 acceptance criteria', 
 
   it.each([30, 60, 90])('AC #2 — a %ds episode lands within 15%%', async (targetSeconds) => {
     const bibleResult = await generateBible({
-      provider,
+      provider: provider(),
       input: { ...input, episodeSeconds: targetSeconds, episodeCount: 3 },
     });
     bill(bibleResult.usage.costCents);
 
     const scriptResult = await generateScript({
-      provider,
+      provider: provider(),
       bible: bibleResult.data,
       episodeNumber: 1,
       episodeSeconds: targetSeconds,
@@ -94,7 +104,7 @@ describe.skipIf(!live).sequential('live model — Phase 1 acceptance criteria', 
     let firstTextMs: number | null = null;
 
     const result = await generateBible({
-      provider,
+      provider: provider(),
       input: { ...input, episodeCount: 3 },
       onDelta: (chunk) => {
         firstAnyMs ??= Date.now() - started;
@@ -126,13 +136,13 @@ describe.skipIf(!live).sequential('live model — Phase 1 acceptance criteria', 
 
   it('AC #4 — regenerating one scene leaves the others byte-identical', async () => {
     const bibleResult = await generateBible({
-      provider,
+      provider: provider(),
       input: { ...input, episodeCount: 3 },
     });
     bill(bibleResult.usage.costCents);
 
     const scriptResult = await generateScript({
-      provider,
+      provider: provider(),
       bible: bibleResult.data,
       episodeNumber: 1,
       episodeSeconds: 90,
@@ -145,7 +155,7 @@ describe.skipIf(!live).sequential('live model — Phase 1 acceptance criteria', 
     const before = script.scenes.map((s) => JSON.stringify(s));
 
     const sceneResult = await regenerateScene({
-      provider,
+      provider: provider(),
       bible: bibleResult.data,
       script,
       sceneIndex: targetIndex,
@@ -166,14 +176,14 @@ describe.skipIf(!live).sequential('live model — Phase 1 acceptance criteria', 
 
   it('safety gate — allows dark adult drama, refuses a real public figure', async () => {
     const ok = await screenContent({
-      provider,
+      provider: provider(),
       text: 'A hotel night manager blackmails the heir who faked his own death.',
     });
     bill(ok.costCents ?? 0);
     expect(ok.allowed).toBe(true);
 
     const refused = await screenContent({
-      provider,
+      provider: provider(),
       text: 'A drama in which Elon Musk secretly runs a hotel and fakes his own death.',
     });
     bill(refused.costCents ?? 0);

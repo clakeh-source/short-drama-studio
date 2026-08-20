@@ -148,7 +148,7 @@ function makeRunner<TBody, TQuery, TParams, TResult>(
   };
 }
 
-function toErrorResponse(error: unknown, operation: string, durationMs: number): Response {
+export function toErrorResponse(error: unknown, operation: string, durationMs: number): Response {
   if (error instanceof UnauthorizedError) {
     return NextResponse.json<ApiErrorBody>(
       { error: { code: 'unauthorized', message: error.message } },

@@ -4,15 +4,17 @@ Scope: the whole application as of `fceffd3` — 18.7k lines across `app/`, `com
 `lib/` and `scripts/`. Focus on the security boundaries (auth, tenancy, secrets), the
 spend controls, and the correctness of the job pipeline.
 
-Nothing in this document has been fixed; it is a read of the code as it stands.
+F1 and F4 have since been fixed in this branch; each carries a note saying how.
+Everything else is a read of the code as it stands.
 
 ## Health check
 
-| Check | Result |
-| --- | --- |
-| `pnpm typecheck` | clean |
-| `pnpm lint` | clean |
-| `pnpm test` | 332 passed, 50 skipped, **1 suite fails to collect** (see F4) |
+| Check | At `fceffd3` | After the F1/F4 fixes |
+| --- | --- | --- |
+| `pnpm typecheck` | clean | clean |
+| `pnpm lint` | clean | clean |
+| `pnpm build` | passes | passes |
+| `pnpm test` | 332 passed, 50 skipped, **1 suite fails to collect** (see F4) | 344 passed, 57 skipped, 0 failed |
 
 ## What holds up well
 
@@ -37,7 +39,7 @@ These are load-bearing and worth not regressing:
 
 ## Findings
 
-### F1 — The spend cap does not apply to any LLM route (high)
+### F1 — The spend cap does not apply to any LLM route (high) — fixed
 
 `MAX_MONTHLY_SPEND_CENTS` is documented in `.env.example:93` as "Generation refuses to
 enqueue past it", and `lib/spend.ts` calls itself "the hard spend ceiling". It is checked
@@ -60,10 +62,22 @@ out — it simply never refuses. A signed-in user can hold the cap at any multip
 by looping "regenerate script", and the video/render routes will keep refusing while the
 LLM routes keep spending.
 
-The fix is mechanical: `checkSpend` before the provider call, using the provider's own
-estimate, and `throw paymentRequired(...)` — the same three lines the video path already
-has. The SSE routes need the check before the stream opens so the client gets a 402 status
-rather than an `error` frame.
+**Fixed.** `lib/ai/budget.ts` now owns an operation → output-budget table, which the
+`lib/ai` modules import in place of their inline `maxTokens` literals, so the number the
+cap reasons about is the number the request sends. `assertLlmBudget` prices one attempt at
+the provider's own rate and throws a 402 when it would breach the cap; all seven routes
+call it before touching a provider. `assertLlmBudgetTotal` covers `series/import`, which
+screens *and* derives in one request — checking only the screen would have let a user pay
+for a verdict on a script that then could not be imported.
+
+The SSE routes needed the refusal to be a real HTTP status rather than an `error` frame
+inside a 200, so `sseRoute` gained a `preflight` hook that runs after validation and before
+the stream opens; anything it throws goes through the same `toErrorResponse` as every JSON
+route. The client already surfaces `error.message` from a non-OK response, so the cap text
+reaches the user unchanged.
+
+A corrective retry inside `streamJson` can still carry one generation past the cap by a
+single attempt — the same latitude a video job that is already running gets.
 
 ### F2 — `/api/inngest` fails open outside recognised production environments (medium)
 
@@ -102,7 +116,7 @@ and the existence of an in-flight render — but it is a cross-tenant answer fro
 that is supposed to have none. Moving the `activeRender` call below `buildEpisodeTimeline`
 fixes it with no behaviour change for legitimate callers.
 
-### F4 — `pnpm test` is red on a clean checkout (low)
+### F4 — `pnpm test` is red on a clean checkout (low) — fixed
 
 `tests/live-anthropic.test.ts` gates its tests with `describe.skipIf(!live)`, but calls
 `getLlmProvider('anthropic')` in the `describe` body (line 39), which Vitest evaluates at
@@ -118,8 +132,10 @@ So the documented free-and-offline `pnpm test` exits non-zero for anyone without
 including CI. `tests/live-providers.test.ts` has the same shape but its providers happen not
 to validate credentials in the constructor, which is why only one suite is red.
 
-Fix: resolve the provider lazily inside each `it`, or behind a helper the skipped suite
-never calls.
+**Fixed.** The provider is now resolved by a `provider()` helper called inside each test,
+so collection touches no credentials. `tests/live-providers.test.ts` still has the eager
+shape; it passes only because its adapters happen not to validate in the constructor, and
+it is worth converting the next time it is touched.
 
 ### F5 — Minor issues
 
@@ -153,7 +169,6 @@ never calls.
 
 ## Suggested order
 
-1. F1 — the cap is the app's only cost control, and a third of the spending surface is outside it.
-2. F4 — a red default test run devalues every other check in the repo.
-3. F3, then F2 — both are small, bounded diffs.
-4. F5 — batch them.
+1. ~~F1~~ and ~~F4~~ — done in this branch.
+2. F3, then F2 — both are small, bounded diffs.
+3. F5 — batch them.

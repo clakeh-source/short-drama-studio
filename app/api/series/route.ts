@@ -1,4 +1,5 @@
 import { badRequest, route } from '@/lib/api/handler';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { screenContent } from '@/lib/ai/safety';
 import { createSeriesInputSchema } from '@/lib/ai/schemas';
 import { withUserDb } from '@/lib/db';
@@ -17,6 +18,10 @@ export const POST = route(
   { operation: 'series.create', body: createSeriesInputSchema },
   async ({ body, user }) => {
     const provider = getLlmProvider();
+
+    // Screening is a model call like any other, so the cap decides whether it
+    // happens — before it happens.
+    await assertLlmBudget(user.id, provider, 'safety.screen', body.premise.length);
 
     const verdict = await screenContent({ provider, text: body.premise });
 

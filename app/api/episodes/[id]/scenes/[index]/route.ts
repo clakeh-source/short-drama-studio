@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { badRequest } from '@/lib/api/handler';
 import { sseRoute } from '@/lib/api/sse';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { regenerateScene } from '@/lib/ai/script';
 import { loadEpisode, parseBible, parseScript, persistScript } from '@/lib/data/series';
 import { estimateScriptSeconds } from '@/lib/timing';
@@ -19,7 +20,11 @@ const bodySchema = z.object({
  * what makes them byte-identical afterwards (Phase 1 AC #4).
  */
 export const POST = sseRoute<{ id: string; index: string }, z.infer<typeof bodySchema>>(
-  { operation: 'script.regenerate_scene', body: bodySchema },
+  {
+    operation: 'script.regenerate_scene',
+    body: bodySchema,
+    preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'script.regenerate_scene'),
+  },
   async ({ body, params, user, send }) => {
     const { episode, series } = await loadEpisode(user.id, params.id);
 

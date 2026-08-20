@@ -1,5 +1,6 @@
 import { badRequest } from '@/lib/api/handler';
 import { sseRoute } from '@/lib/api/sse';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { generateScript } from '@/lib/ai/script';
 import {
   loadContinuitySummary,
@@ -13,7 +14,10 @@ import { recordUsage } from '@/lib/usage';
 
 /** Writes (or rewrites) the whole episode script, streamed to the client. */
 export const POST = sseRoute<{ id: string }>(
-  { operation: 'script.generate' },
+  {
+    operation: 'script.generate',
+    preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'script.generate'),
+  },
   async ({ params, user, send }) => {
     const { episode, series } = await loadEpisode(user.id, params.id);
 
