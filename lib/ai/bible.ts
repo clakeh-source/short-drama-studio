@@ -1,6 +1,7 @@
 import 'server-only';
 
 import type { LlmProvider, LlmStreamChunk } from '@/lib/providers';
+import { LLM_BUDGETS } from './budget';
 import { streamJson } from './json';
 import { bibleSchema, type Bible, type CreateSeriesInput } from './schemas';
 import { inputBlock, JSON_RULES, SAFETY_RULES, STRUCTURE_RULES, VISUAL_RULES } from './prompts/rules';
@@ -84,7 +85,7 @@ Write in ${input.language}. Aim at a ${input.audience} audience. Genre: ${input.
     system: SYSTEM,
     prompt,
     schema: bibleSchema,
-    maxTokens: 24_000,
+    maxTokens: LLM_BUDGETS['bible.generate'],
     effort: 'low',
     ...(options.onDelta ? { onDelta: options.onDelta } : {}),
   });

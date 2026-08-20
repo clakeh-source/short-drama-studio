@@ -28,6 +28,7 @@ vi.mock('@/lib/log', () => ({
 }));
 
 const { sseRoute } = await import('@/lib/api/sse');
+const { paymentRequired } = await import('@/lib/api/handler');
 
 /** A promise the test resolves by hand, to hold a handler mid-flight. */
 function gate() {
@@ -181,5 +182,49 @@ describe('sseRoute — the client disconnects mid-generation', () => {
     await Promise.race([settled.waited, new Promise((r) => setTimeout(r, 200))]);
 
     expect(escaped, 'the error path must not produce an unhandled rejection').toBeNull();
+  });
+});
+
+describe('sseRoute — preflight', () => {
+  /**
+   * Why a hook rather than a check inside the handler: once the stream is open
+   * the status is already 200, and a refusal can only be an `error` frame that
+   * a client has to be watching for. The spend cap needs to be a status the
+   * caller can branch on, like it is on every other route.
+   */
+  it('refuses with a real HTTP status and never opens the stream', async () => {
+    const handler = vi.fn();
+
+    const route = sseRoute(
+      {
+        operation: 'test.op',
+        preflight: async () => {
+          throw paymentRequired('over the cap');
+        },
+      },
+      handler,
+    );
+
+    const response = await route(post(), noParams);
+
+    expect(response.status).toBe(402);
+    expect(response.headers.get('content-type')).not.toContain('event-stream');
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'spend_cap_exceeded', message: 'over the cap' },
+    });
+    expect(handler, 'nothing may be spent once preflight has refused').not.toHaveBeenCalled();
+  });
+
+  it('runs the handler when preflight passes', async () => {
+    const preflight = vi.fn(async () => {});
+
+    const route = sseRoute({ operation: 'test.op', preflight }, async ({ send }) => {
+      send('done', { ok: true });
+    });
+
+    const body = await drain(await route(post(), noParams));
+
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(body).toContain('event: done');
   });
 });

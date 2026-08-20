@@ -109,11 +109,10 @@ export function GenerationPanel(props: GenerationPanelProps) {
     try {
       const response = await fetch(`/api/episodes/${props.episodeId}/generate`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          // Makes a double-submit a no-op rather than a double charge.
-          'idempotency-key': `episode-${props.episodeId}-${Date.now()}`,
-        },
+        // No idempotency-key header: a fresh one per click is not idempotency,
+        // it is the opposite. The server derives the event id from the shots it
+        // is about to enqueue, which makes a double-submit a no-op by itself.
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({}),
       });
 

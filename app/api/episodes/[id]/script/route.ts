@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { badRequest, dynamicRoute } from '@/lib/api/handler';
 import { sseRoute } from '@/lib/api/sse';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { generateScript } from '@/lib/ai/script';
 import { withUserDb } from '@/lib/db';
 import { episodes } from '@/lib/db/schema';
@@ -14,6 +15,7 @@ import {
 import { driftFromTarget, estimateScriptSeconds } from '@/lib/timing';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Setting an episode's script.
@@ -82,8 +84,16 @@ const ingestScript = dynamicRoute<{ id: string }, z.infer<typeof ingestSchema>>(
 );
 
 /** Writes (or rewrites) the whole episode script, streamed to the client. */
+// Not `export const POST`: the exported POST above dispatches on content type,
+// because one resource is filled two ways. The rate limit and the budget
+// preflight come from the audit on main and apply to the generating half only —
+// storing a script the caller already wrote costs no model time.
 const generateEpisodeScript = sseRoute<{ id: string }>(
-  { operation: 'script.generate' },
+  {
+    operation: 'script.generate',
+    rateLimit: RATE_LIMITS.model,
+    preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'script.generate'),
+  },
   async ({ params, user, send }) => {
     const { episode, series } = await loadEpisode(user.id, params.id);
 

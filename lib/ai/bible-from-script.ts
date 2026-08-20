@@ -3,6 +3,7 @@ import 'server-only';
 import { z } from 'zod';
 import type { LlmProvider, LlmStreamChunk } from '@/lib/providers';
 import type { ParsedEpisode } from '@/lib/script-import/parse';
+import { LLM_BUDGETS } from './budget';
 import { streamJson } from './json';
 import { bibleCharacterSchema, bibleSchema, type Bible } from './schemas';
 import { JSON_RULES, SAFETY_RULES, VISUAL_RULES } from './prompts/rules';
@@ -161,7 +162,7 @@ Write in ${options.language}.`;
     system: SYSTEM,
     prompt,
     schema: responseSchema,
-    maxTokens: 24_000,
+    maxTokens: LLM_BUDGETS['bible.derive'],
     effort: 'low',
     ...(options.onDelta ? { onDelta: options.onDelta } : {}),
   });

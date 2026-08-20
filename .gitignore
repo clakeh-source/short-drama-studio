@@ -23,3 +23,6 @@ test-results/
 
 # Audit trail from `pnpm orphans --delete`. Runtime artefact, not source.
 orphans.log
+
+# Agent worktrees: whole checkouts of this repo, nested inside it.
+.claude/worktrees/

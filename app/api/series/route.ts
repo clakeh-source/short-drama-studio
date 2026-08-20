@@ -1,10 +1,12 @@
 import { badRequest, route } from '@/lib/api/handler';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { screenContent } from '@/lib/ai/safety';
 import { createSeriesInputSchema } from '@/lib/ai/schemas';
 import { withUserDb } from '@/lib/db';
 import { series } from '@/lib/db/schema';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * Creates a series from a premise.
@@ -14,9 +16,13 @@ import { recordUsage } from '@/lib/usage';
  * nothing else.
  */
 export const POST = route(
-  { operation: 'series.create', body: createSeriesInputSchema },
+  { operation: 'series.create', body: createSeriesInputSchema, rateLimit: RATE_LIMITS.model },
   async ({ body, user }) => {
     const provider = getLlmProvider();
+
+    // Screening is a model call like any other, so the cap decides whether it
+    // happens — before it happens.
+    await assertLlmBudget(user.id, provider, 'safety.screen', body.premise.length);
 
     const verdict = await screenContent({ provider, text: body.premise });
 

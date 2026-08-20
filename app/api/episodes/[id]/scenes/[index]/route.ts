@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import { badRequest } from '@/lib/api/handler';
 import { sseRoute } from '@/lib/api/sse';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { regenerateScene } from '@/lib/ai/script';
 import { loadEpisode, parseBible, parseScript, persistScript } from '@/lib/data/series';
 import { estimateScriptSeconds } from '@/lib/timing';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 const bodySchema = z.object({
   note: z.string().max(500).optional(),
@@ -19,7 +21,12 @@ const bodySchema = z.object({
  * what makes them byte-identical afterwards (Phase 1 AC #4).
  */
 export const POST = sseRoute<{ id: string; index: string }, z.infer<typeof bodySchema>>(
-  { operation: 'script.regenerate_scene', body: bodySchema },
+  {
+    operation: 'script.regenerate_scene',
+    body: bodySchema,
+    rateLimit: RATE_LIMITS.model,
+    preflight: ({ user }) => assertLlmBudget(user.id, getLlmProvider(), 'script.regenerate_scene'),
+  },
   async ({ body, params, user, send }) => {
     const { episode, series } = await loadEpisode(user.id, params.id);
 

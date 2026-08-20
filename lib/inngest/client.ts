@@ -1,5 +1,9 @@
+import { createHash } from 'node:crypto';
+
 import { EventSchemas, Inngest } from 'inngest';
 import type { RunStage } from '@/lib/db/schema';
+
+import { inngestIsDev } from './mode';
 
 /**
  * Typed event catalogue.
@@ -96,6 +100,13 @@ export const inngest = new Inngest({
   id: 'short-drama-studio',
   schemas: new EventSchemas().fromRecord<Events>(),
   eventKey: process.env.INNGEST_EVENT_KEY,
+  /**
+   * Stated, not inferred. The SDK decides whether to verify the signature on
+   * every request to /api/inngest from this mode, and left to itself it reads
+   * an unrecognised environment as dev — which skips verification entirely. See
+   * `inngestIsDev`.
+   */
+  isDev: inngestIsDev(),
 });
 
 /* -------------------------------------------------------------------------- */
@@ -117,11 +128,37 @@ export function shotVoiceEventId(shotId: string, attempt: number): string {
 }
 
 /**
- * Episode fan-out is keyed by the caller's idempotency key when one is supplied,
- * so a retried HTTP request cannot double-enqueue a whole episode.
+ * Episode fan-out, keyed by *what is being generated* rather than by when it was
+ * asked for.
+ *
+ * This used to fall back to `Date.now()`, and the only caller minted a fresh
+ * `episode-<id>-<Date.now()>` header on every click — so no two requests ever
+ * shared a key and the dedup this function documents never once applied. (Money
+ * was still safe: the per-shot ids below dedup during fan-out. The guarantee
+ * stated here was simply not the one being provided.)
+ *
+ * `shotSetFingerprint` is the honest key. Two clicks on the same pending shots
+ * produce the same id and the second is dropped; a retry advances a shot's
+ * attempt, which changes the fingerprint, so genuine re-generation goes through.
+ * An explicit `idempotency-key` header still wins, for callers that want to pin
+ * a retry themselves.
  */
-export function episodeGenerateEventId(episodeId: string, key: string | null): string {
-  return `episode-generate:${episodeId}:${key ?? Date.now()}`;
+export function episodeGenerateEventId(episodeId: string, key: string): string {
+  return `episode-generate:${episodeId}:${key}`;
+}
+
+/**
+ * A stable digest of the shots a generate request would enqueue, each with the
+ * attempt it would run as. Hashed because an episode can carry 200 shots and an
+ * event id has to stay a reasonable length.
+ */
+export function shotSetFingerprint(shots: Array<{ id: string; retryCount: number }>): string {
+  const canonical = shots
+    .map((shot) => `${shot.id}:${shot.retryCount}`)
+    .sort()
+    .join(',');
+
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 32);
 }
 
 /**

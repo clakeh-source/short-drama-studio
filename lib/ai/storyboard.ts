@@ -2,6 +2,7 @@ import 'server-only';
 
 import type { LlmProvider, LlmStreamChunk } from '@/lib/providers';
 import { fitShotCount, MAX_SHOT_SECONDS, MIN_SHOT_SECONDS, shotCountRange } from '@/lib/shots';
+import { LLM_BUDGETS } from './budget';
 import { streamJson } from './json';
 import { storyboardSchema, type Bible, type Script, type Storyboard } from './schemas';
 import { CAMERA_VOCABULARY } from './prompts';
@@ -118,7 +119,7 @@ episode, summing to about ${episodeSeconds} seconds.`;
     system: SYSTEM,
     prompt,
     schema: storyboardSchema,
-    maxTokens: 32_000,
+    maxTokens: LLM_BUDGETS['storyboard.generate'],
     effort: 'low',
     ...(options.onDelta ? { onDelta: options.onDelta } : {}),
   });

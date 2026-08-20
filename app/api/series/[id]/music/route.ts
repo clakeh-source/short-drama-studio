@@ -1,11 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { badRequest, dynamicRoute, notFound } from '@/lib/api/handler';
-import { requireApiUser } from '@/lib/auth';
 import { withUserDb } from '@/lib/db';
 import { series } from '@/lib/db/schema';
 import { loadSeries } from '@/lib/data/series';
 import { uploadBuffer } from '@/lib/storage';
 import { log } from '@/lib/log';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /**
  * The optional music bed for a series.
@@ -18,6 +18,9 @@ import { log } from '@/lib/log';
 
 const MAX_BYTES = 20 * 1024 * 1024;
 
+/** Boundary lines and headers, so a file at the limit is not rejected for its envelope. */
+const MULTIPART_OVERHEAD_BYTES = 8 * 1024;
+
 const ACCEPTED = new Set([
   'audio/mpeg',
   'audio/mp3',
@@ -28,28 +31,33 @@ const ACCEPTED = new Set([
 ]);
 
 /**
- * Multipart, so this one route is written by hand rather than through the JSON
- * `route()` wrapper. Auth and ownership are still enforced the same way.
+ * Multipart, so it reads the body itself rather than declaring a Zod schema —
+ * `dynamicRoute` only touches the body when one is configured. Everything else
+ * is the shared wrapper: session, ownership, structured logging, and the error
+ * envelope.
+ *
+ * It used to be written by hand, with a catch that returned `error.message` for
+ * anything it caught. A storage or database failure therefore handed its
+ * internal message to the client under an HTTP 500 — the single route that
+ * escaped `toErrorResponse`, which exists to stop exactly that.
  */
-export async function POST(
-  request: Request,
-  context: { params: Promise<{ id: string }> },
-): Promise<Response> {
-  const { id } = await context.params;
-
-  let user;
-  try {
-    user = await requireApiUser();
-  } catch {
-    return Response.json(
-      { error: { code: 'unauthorized', message: 'Not signed in' } },
-      { status: 401 },
-    );
-  }
-
-  try {
+export const POST = dynamicRoute<{ id: string }>(
+  { operation: 'series.music.upload', rateLimit: RATE_LIMITS.upload },
+  async ({ params, request, user }) => {
     // Confirms ownership through RLS before anything is written to storage.
-    await loadSeries(user.id, id);
+    await loadSeries(user.id, params.id);
+
+    /**
+     * Checked before `formData()`, which buffers the whole body into memory.
+     * The declared length can lie, so `file.size` is still checked below — this
+     * is only about not reading 500MB to find out we did not want it.
+     */
+    const declared = Number(request.headers.get('content-length') ?? 0);
+    if (declared > MAX_BYTES + MULTIPART_OVERHEAD_BYTES) {
+      throw badRequest(
+        `That upload is ${(declared / 1024 / 1024).toFixed(1)}MB. The limit is ${MAX_BYTES / 1024 / 1024}MB.`,
+      );
+    }
 
     const form = await request.formData();
     const file = form.get('file');
@@ -69,33 +77,28 @@ export async function POST(
     const extension = file.name.split('.').pop()?.toLowerCase() ?? 'mp3';
     const stored = await uploadBuffer({
       bucket: 'audio',
-      path: `${user.id}/series/${id}/music.${extension}`,
+      path: `${user.id}/series/${params.id}/music.${extension}`,
       buffer: Buffer.from(await file.arrayBuffer()),
       contentType: file.type || 'audio/mpeg',
     });
 
     await withUserDb(user.id, (tx) =>
-      tx.update(series).set({ musicStoragePath: stored.storagePath }).where(eq(series.id, id)),
+      tx
+        .update(series)
+        .set({ musicStoragePath: stored.storagePath })
+        .where(eq(series.id, params.id)),
     );
 
     log.info('music bed uploaded', {
       userId: user.id,
-      seriesId: id,
+      seriesId: params.id,
       operation: 'series.music.upload',
       bytes: stored.bytes,
     });
 
-    return Response.json({ uploaded: true, bytes: stored.bytes });
-  } catch (error) {
-    const status =
-      error && typeof error === 'object' && 'status' in error ? Number(error.status) : 500;
-    const message =
-      error && typeof error === 'object' && 'message' in error
-        ? String(error.message)
-        : 'Could not upload that file.';
-    return Response.json({ error: { code: 'bad_request', message } }, { status });
-  }
-}
+    return { uploaded: true, bytes: stored.bytes };
+  },
+);
 
 /** Removes the music bed. */
 export const DELETE = dynamicRoute<{ id: string }>(

@@ -2,6 +2,7 @@ import 'server-only';
 
 import { ApiError, paymentRequired } from '@/lib/api/handler';
 import { activeRender, buildEpisodeTimeline, listRenders } from '@/lib/data/render';
+import { loadEpisode } from '@/lib/data/series';
 import { episodeRenderEventId, inngest } from '@/lib/inngest/client';
 import { getRenderProvider } from '@/lib/providers';
 import { checkSpend } from '@/lib/spend';
@@ -50,6 +51,22 @@ export async function startAssembly(
   userId: string,
   episodeId: string,
 ): Promise<AssembleResult> {
+  /**
+   * Ownership first, and only then anything else.
+   *
+   * `activeRender` reads through the privileged handle and takes no user id —
+   * it is written for the job side, where there is no session to read through.
+   * Asking it first meant `POST /api/episodes/<someone-else's-id>/render`
+   * answered "a render is already running", with their render's id in the body:
+   * a small cross-tenant answer from an endpoint that should have none.
+   *
+   * `loadEpisode` reads through RLS and throws 404 on anything the caller does
+   * not own. The fix is main's, from the audit; it lived in the route until this
+   * branch moved the logic here, and it has to move with it — a refactor that
+   * relocates a check is how a fixed bug comes back.
+   */
+  await loadEpisode(userId, episodeId);
+
   const inFlight = await activeRender(episodeId);
   if (inFlight) {
     return {

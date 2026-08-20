@@ -27,6 +27,10 @@ const eslintConfig = [
     ignores: [
       '.next/**',
       'node_modules/**',
+      // Agent worktrees are whole checkouts of this repo living inside it.
+      // Linting them lints a copy of everything — 1000+ duplicate errors that
+      // belong to another branch's working state, not to this tree.
+      '.claude/worktrees/**',
       'drizzle/**',
       'next-env.d.ts',
       'playwright-report/**',

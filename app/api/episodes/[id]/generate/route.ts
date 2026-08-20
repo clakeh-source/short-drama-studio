@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { badRequest, dynamicRoute, paymentRequired } from '@/lib/api/handler';
 import { loadStoryboard } from '@/lib/data/storyboard';
 import { estimateEpisodeCost } from '@/lib/data/estimate';
-import { episodeGenerateEventId, inngest } from '@/lib/inngest/client';
+import { episodeGenerateEventId, inngest, shotSetFingerprint } from '@/lib/inngest/client';
 import { getTtsProvider, getVideoProvider } from '@/lib/providers';
 import { checkSpend } from '@/lib/spend';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 const bodySchema = z.object({
   /** Regenerate only these shots; omit for "everything still pending". */
@@ -20,7 +21,7 @@ const bodySchema = z.object({
  * double-clicked request cannot enqueue the episode twice.
  */
 export const POST = dynamicRoute<{ id: string }, z.infer<typeof bodySchema>>(
-  { operation: 'episode.generate', body: bodySchema },
+  { operation: 'episode.generate', body: bodySchema, rateLimit: RATE_LIMITS.job },
   async ({ body, params, user, idempotencyKey }) => {
     const board = await loadStoryboard(user.id, params.id);
     const allShots = board.scenes.flatMap((s) => s.shots);
@@ -46,7 +47,9 @@ export const POST = dynamicRoute<{ id: string }, z.infer<typeof bodySchema>>(
     }
 
     const { ids } = await inngest.send({
-      id: episodeGenerateEventId(params.id, idempotencyKey),
+      // The caller may pin the key; otherwise it is the shot set itself, so a
+      // double-click is one enqueue and a real retry is a distinct event.
+      id: episodeGenerateEventId(params.id, idempotencyKey ?? shotSetFingerprint(selected)),
       name: 'episode/generate.requested',
       data: {
         userId: user.id,

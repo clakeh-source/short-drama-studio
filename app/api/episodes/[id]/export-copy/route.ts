@@ -1,16 +1,20 @@
 import { dynamicRoute } from '@/lib/api/handler';
+import { assertLlmBudget } from '@/lib/ai/budget';
 import { generateExportCopy } from '@/lib/ai/export';
 import { loadEpisode, parseBible } from '@/lib/data/series';
 import { getLlmProvider } from '@/lib/providers';
 import { recordUsage } from '@/lib/usage';
+import { RATE_LIMITS } from '@/lib/rate-limit';
 
 /** Caption and hashtags for the post. One LLM call, from the episode's own synopsis. */
 export const POST = dynamicRoute<{ id: string }>(
-  { operation: 'export.caption' },
+  { operation: 'export.caption', rateLimit: RATE_LIMITS.model },
   async ({ params, user }) => {
     const { episode, series } = await loadEpisode(user.id, params.id);
     const bible = parseBible(series.bible);
     const provider = getLlmProvider();
+
+    await assertLlmBudget(user.id, provider, 'export.caption');
 
     const result = await generateExportCopy({
       provider,

@@ -104,6 +104,14 @@ The `INNGEST_SIGNING_KEY` already in `.env.local` is a `signkey-prod-` key. Use
 the keys from the Inngest app that actually serves this deployment; a mismatched
 signing key makes every step request fail authentication.
 
+**It is required outside local development.** `/api/inngest` is public by
+necessity and it invokes the background jobs, so the signature is what
+establishes that a request came from Inngest. `lib/env.ts` refuses to start
+without the key anywhere `lib/inngest/mode.ts` does not recognise as a dev
+machine — `NODE_ENV=development`, or an explicit `INNGEST_DEV=1`. If you run this
+somewhere other than Vercel, set both Inngest keys or set `INNGEST_DEV=1`
+deliberately; do not leave it to be guessed.
+
 ### 4. Vercel
 
 Create the project from the repo, then set environment variables. **Set them
