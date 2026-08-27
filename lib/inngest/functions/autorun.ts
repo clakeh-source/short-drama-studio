@@ -171,10 +171,35 @@ export const autorun = inngest.createFunction(
 
       /* -- the stage itself ---------------------------------------------- */
 
+      /**
+       * The bible stage's series row is created in its own step, before the
+       * stage that fills it in.
+       *
+       * Both used to sit inside the single `stage-…` step below, and this
+       * function retries twice. A provider error — or anything thrown by
+       * `persistBible` after it — re-ran the whole callback: a second `series`
+       * row, a second paid trip through the model, and the first row orphaned
+       * with the run pointed at the replacement. Inngest memoises a step that
+       * has succeeded, so splitting them means a retry pays for the generation
+       * alone and reuses the series it already made.
+       */
+      const bibleSeriesId =
+        run.stage === 'bible'
+          ? await step.run(`bible-series-${guard}`, () =>
+              ensureRunSeries(runId, userId, run.prompt, run.targetSeconds),
+            )
+          : null;
+
       const seriesId = await step.run(`stage-${run.stage}-${guard}`, async () => {
         switch (run.stage) {
           case 'bible':
-            return runBibleStage(runId, userId, run.prompt, run.targetSeconds);
+            return runBibleStage(
+              runId,
+              userId,
+              requireSeries(bibleSeriesId),
+              run.prompt,
+              run.targetSeconds,
+            );
           case 'cast':
             return runCastStage(runId, userId, requireSeries(run.seriesId));
           case 'script':
@@ -236,6 +261,28 @@ export const autorun = inngest.createFunction(
             return render?.status === 'ready';
           });
         }
+
+        /**
+         * Running out of polls is a failure, exactly as it is for the shots
+         * stage above.
+         *
+         * This used to fall out of the loop and advance anyway, so a render
+         * still queued after ten minutes — or one that failed outright — moved
+         * the run to `done` and marked it `completed`. Every clip had been paid
+         * for and the run reported a finished film that did not exist, which is
+         * the one thing a supervisor must never say.
+         */
+        if (!ready) {
+          await step.run('render-timeout', () =>
+            updateRun(runId, {
+              status: 'failed',
+              error:
+                'The final render did not finish in time. Every clip is still on the review ' +
+                'board — assemble the episode again from there.',
+            }),
+          );
+          return { runId, stopped: 'timeout' as const, stage: 'assemble' as const };
+        }
       }
 
       await step.run(`advance-${run.stage}-${guard}`, async () => {
@@ -293,13 +340,23 @@ async function firstEpisodeId(seriesId: string): Promise<string> {
   return row.id;
 }
 
-/** Creates the series and develops the bible, cast and episode stubs. */
-async function runBibleStage(
+/**
+ * The run's series row, created once.
+ *
+ * Reads the run before inserting so that a retry of this step — or a run
+ * resumed at `bible` after a crash — adopts the series it already has rather
+ * than starting a second one. Cheap to check, and the alternative is a
+ * duplicate the user has to find and delete by hand.
+ */
+async function ensureRunSeries(
   runId: string,
   userId: string,
   prompt: string,
   targetSeconds: number,
 ): Promise<string> {
+  const existing = await loadRunForJob(runId);
+  if (existing.seriesId) return existing.seriesId;
+
   const [row] = await db()
     .insert(series)
     .values({
@@ -315,7 +372,17 @@ async function runBibleStage(
 
   const seriesId = row!.id;
   await updateRun(runId, { seriesId });
+  return seriesId;
+}
 
+/** Develops the bible, cast and episode stubs into the series already created. */
+async function runBibleStage(
+  runId: string,
+  userId: string,
+  seriesId: string,
+  prompt: string,
+  targetSeconds: number,
+): Promise<string> {
   const result = await generateBible({
     provider: getLlmProvider(),
     input: {
